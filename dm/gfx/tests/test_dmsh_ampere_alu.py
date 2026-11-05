@@ -124,6 +124,33 @@ class HalfImmediate(Alu):
         self.assertRegex(msl, r'\b2\.0\b')
 
 
+class HalfSwizzle(Alu):
+    """A half-pair operand's swizzle (A 74..75, the 32 slot 60..61, the 64 slot 81..82: 0 as is, 1 .F32, 2 .H0_H0, 3 .H1_H1) applies to a constant too: nvdisasm prints
+    HMUL2 R37, R37.H0_H0, c[0x0] [0x168].H0_H0 (bits 60..61 = 2), a half scaled by one half of a uniform. Read as is, the high lane took the constant's other half.
+    Value 1 is .F32, the 32-bit float itself in both lanes (nvdisasm: R20.F32), not .H1_H1. Encodings from the sm_86 oracle corpus, registers renamed"""
+    C_H0 = (0x000fe20000000800, 0x20005a0013067a32)    # HMUL2 R6, R19.H0_H0, c[0x0] [0x168].H0_H0
+    C_H1 = (0x000fe20000000c00, 0x30005a0013067a32)    # HMUL2 R6, R19.H1_H1, c[0x0] [0x168].H1_H1
+    F32 = (0x000fe20000000800, 0x1000001413067232)     # HMUL2 R6, R19.H0_H0, R20.F32
+    LANE = re.compile(r'float2\(as_type<half2>\([^;]*?\)\)\.([xy])')
+
+    def lanes(self, *code, srcs=(19,)):
+        msl = self.kept(*code, srcs=srcs)
+        return msl, set(self.LANE.findall(msl))
+
+    def test_constant_low_half_in_both_lanes(self):
+        msl, read = self.lanes(self.C_H0)
+        self.assertEqual(read, {'x'}, msl)   # A and the constant: their low halves only
+
+    def test_constant_high_half_in_both_lanes(self):
+        msl, read = self.lanes(self.C_H1)
+        self.assertEqual(read, {'y'}, msl)
+
+    def test_f32_operand_is_the_float(self):
+        msl, read = self.lanes(self.F32, srcs=(19, 20))
+        self.assertEqual(msl.count('as_type<half2>'), 1, msl)   # A's unpack alone: R20 is used as a float, not split into halves
+        self.assertEqual(read, {'x'}, msl)
+
+
 class CompareFtz(Alu):
     """FSETP / FSET .FTZ (bit 80): a denormal operand compares as zero, as on NVIDIA; Apple's GPUs keep denormals. Mario Kart World's deferred lighting 635061c90d75a8d1
     normalises its four depth-weighted samples by 1 / sum only where FSETP.NEU.FTZ says sum != 0: a denormal sum passed, its reciprocal overflowed, and the NaN came out
