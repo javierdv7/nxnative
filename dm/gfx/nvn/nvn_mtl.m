@@ -12885,6 +12885,13 @@ static int ndve_direct_role(NvShader *cs) {
     if (!strcmp(cs->key, "4f41ccf24f163e0d_b")) return 2;
     return 0;
 }
+// The network between those two, whose result the direct draw replaces: on a GPU without tensor cores it is nearly all of the frame (M1 Max: 34.7 ms of GPU, seedds/nxnative#1375).
+// The keys are its heavy stages only, and only between the two dispatches, so no other compute work of the game is skipped
+static int ndve_direct_skip(NvShader *cs) {
+    static const char *const keys[] = { "e6be82d835fbe4d3", "0a56002cdc7e1fce", "ba079f68ae288dba", "a8b4fb48fee0ccf8", "5a7d69b067a7f011", "d15370a382630d4e", "7f7ff0f36b54d90f" };
+    for (unsigned i = 0; i < sizeof keys / sizeof *keys; i++) if (!strncmp(cs->key, keys[i], 16)) return 1;
+    return 0;
+}
 static id<MTLTexture> ndve_image(NvShader *cs, unsigned slot, tex_t *desc) {
     int tid = (int)(S.img[5][slot] & 0xfffff);
     const nvn_rbind *binding = NULL;
@@ -12922,6 +12929,7 @@ static void dispatch(const p_dispatch *dp) {
     if (!cs) { RED_ONCE(28, "the dispatched program has no compute shader (or it is not mapped)"); return; }
     int ndve = !dp->ind && dp->x && dp->y && dp->z == 1 ? ndve_direct_role(cs) : 0;
     if (ndve == 1) g_ndve_decoded = nil;
+    if (!ndve && g_ndve_decoded && ndve_direct_skip(cs)) return;
     if (ndve == 2 && g_ndve_decoded) {
         rp_flush();
         image_prepare(program, 0x20);
@@ -13328,17 +13336,16 @@ static int ndve_direct_draw(NvShader *cs) {
     g_ndve_decoded = nil;
     tex_t desc = {0};
     id<MTLTexture> out = ndve_image(cs, 1, &desc);
-    if (in.width != 1920 || in.height != 1080 || out.width != 2560 || out.height != 1440 ||
-        !(out.usage & MTLTextureUsageRenderTarget)) return 0;
+    if (in.width != 1920 || in.height != 1080 || !out || !(out.usage & MTLTextureUsageRenderTarget)) return 0;
     zskip_del(desc.serial);
     sparse_gpu_wrote(&desc);
     rp_end();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     ubd_land_compute();
-    const NVNcopyRegion src = {0, 0, 0, 1920, 1080, 1}, dst = {0, 0, 0, 2560, 1440, 1};
+    const NVNcopyRegion src = {0, 0, 0, 1920, 1080, 1}, dst = {0, 0, 0, (int)out.width, (int)out.height, 1};
     if (!copy_t2t_draw(in, out, 0, 0, 0, 0, &src, &dst, 1, 0)) return 0;
     static int once;
-    if (!once++) MLOG("NDVE movie: scaling the decoded RGBA frame directly from 1920x1080 to 2560x1440");
+    if (!once++) MLOG("NDVE movie: scaling the decoded RGBA frame directly from 1920x1080 to %lux%lu, the network skipped", (unsigned long)out.width, (unsigned long)out.height);
     return 1;
 }
 // nvnCommandBufferDrawTexture: the source region of a texture (texels, through the handle's sampler) drawn into the destination region of each bound colour target (pixels in the window's
