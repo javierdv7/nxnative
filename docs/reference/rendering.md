@@ -1080,6 +1080,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Variants:** agl ships its network in other packs too, `agl_ndsr_vr.pck` and `agl_ndsr_vr_light.pck`. Their compute shaders are the game's upscaler shaders as well (`UPSCALER_SOURCE` in `dm/games/game.py`): Ocarina of Time (Switch 2) upscales 1536x864 to 2048x1152 with `agl_ndsr_vr.pck`'s `f8965bffbdf51d78` and others, which the option did not list, so its network kept running.
 - **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md): NDSR `7629d857a0a93833` in the heavy areas, 1676x943 → 2304x1296 docked (after three passes of its own at the render resolution, which stay), 960x540 → 1920x1080 handheld.
 
+### Block corruption after NDVE movie reconstruction
+
+- **Symptom:** Ocarina of Time's title movie shows rectangular colour blocks while the logo, menu and subtitles remain legible.
+- **Cause:** GPU readbacks on an M1 Pro show a clean 1920×1080 RGBA texture after the AV1 frame is converted. Artifacts first appear in the following NDVE intermediate and cover the picture in its 2560×1440 output. The translation error inside NDVE remains open.
+- **Fix:** `DM_NVN_NDVE_MOVIE_DIRECT=1` scales the clean frame into the movie's usual output with a bilinear Metal draw. It matches the observed conversion and final shader keys, requires both dispatches in the same submission and checks the image formats and dimensions. Other dispatches follow the game's path. The option trades NDVE reconstruction for standard scaling and keeps the earlier movie passes.
+- **Check:** `make -C dm/gfx/tests GAME=040074A01BF12000 check_t_ndve_movie` checks the submission lifetime and samples three points in the scaled output. The combined local Ocarina integration showed the title movie without the rectangular blocks after the switch was enabled.
+- **Found on:** The Legend of Zelda: Ocarina of Time (Switch 2), title ID `0400486024DEC000`, version 1.1.1.
+
 ### An upscaler's colour read from its code
 
 - **Symptom:** with `DM_UPSCALER=metalfx`, a game's picture is washed out wherever it upscales: lifted shadows and low contrast, the scene only, with the UI drawn after it correct; with `DM_UPSCALER=game`, or at a size the game does not upscale, it is right.
