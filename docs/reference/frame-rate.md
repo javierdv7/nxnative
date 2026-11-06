@@ -70,6 +70,14 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 - **Note:** what shortens the serial chain itself, so the GPU's occupancy at a GPU-bound hold is higher and the clock rises faster: Metal encoding on its own thread (`DM_NVN_ENC_THREAD=1`, the profile's `enc_thread on`; the submit thread's translation 6.5 → about 4 ms a frame, measured on an M4 Pro and for Need for Speed), and a smaller first segment. Neither can start the GPU before the game's own work after its wait, and neither was measured on this symptom yet.
 
 
+### Frames longer than three vsyncs lose game time
+
+- **Symptom:** with a frame step, a GPU-bound game plays slow below 20 fps: the log's `frame step: game time … (0.709 of real time)` with most frames held at 3 vsyncs, thousands of `dropped` vsyncs, and probes back to hold 1 that all fail.
+- **Cause:** the longest hold was fixed at 3 vsyncs (`FSTEP_MAX` in `nvn_fstep.h`), the most Breath of the Wild and Tears of the Kingdom take. A frame of 50–65 ms held at 3 gives the game 50 ms of time; the rest goes to the debt, which is paid back one vsync at a time only below the same cap, and past `FSTEP_DEBT_MAX` it is dropped.
+- **Fix:** `FSTEP_MAX` is 4 and bounds the tables only. The longest hold is the profile's `fps_hold_max` (3 by default, 4 for a game whose own interval readers take 4: `DM_GAME_FPS_HOLD_MAX`), passed as `kmax` by `fstep_tick` (`hle_nvn.c`); paying back is bounded by the same value (`nvn_fstep.step_max`, 0 = 3), not by the cap's `kmax`, so a 30 fps cap still pays back with steps of 3. Games without the key behave as before.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) on an Apple M4 (24 GB), Kokiri Forest at 45–65 ms a frame: 0.709 of real time with hold 3.
+- **Check:** `make -C dm/gfx/tests GAME=<id> t_fstep && dm/gfx/tests/t_fstep` (78 checks, with Ocarina of Time's profile and Breath of the Wild's).
+
 ### A derived profile drops the frame step its build lacks
 
 - **Symptom:** a game whose profile has a frame step (`FRAME_STEP` in its `patches.py`) runs at double speed when packed from another update; the log has no `frame step in whole vsyncs` line, and the frame counter shows 60.

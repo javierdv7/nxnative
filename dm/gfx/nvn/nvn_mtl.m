@@ -1180,7 +1180,10 @@ uint64_t mtl_blit_barriers(void) { return g_blit_barriers; }
 static int bw_hit(uint64_t lo, uint64_t hi) { for (int i = 0; i < g_bw_n; i++) if (lo < g_bw_hi[i] && g_bw_lo[i] < hi) return 1; return 0; }
 static int br_hit(uint64_t lo, uint64_t hi) { for (int i = 0; i < g_br_n; i++) if (lo < g_br_hi[i] && g_br_lo[i] < hi) return 1; return 0; }
 // buffer → buffer / fill: reads [rlo, rhi) (0, 0 when nothing is read), writes [wlo, whi)
-static uint64_t g_wr_epoch;   // Bumped by every buffer write outside a render pass (copy / update / fill, texture → buffer, dispatch): indirect-draw conversions made before it are stale (ixc_run)
+static uint64_t g_wr_epoch;   // Bumped by every buffer write outside a render pass (copy / update / fill, texture → buffer, dispatch)
+// Indirect-draw conversions (ixc_run) are stale after a write that can reach what they read: a dispatch or a texture → buffer copy (any address), or a copy / update / fill whose destination
+// overlaps a converted record or its index buffer (ixc_wr_note, from blit_buf). Other buffer writes leave them valid, so a pass is not split again for every inline uniform update
+static uint64_t g_ixc_gen; static void ixc_wr_note(uint64_t lo, uint64_t hi);
 static uint64_t g_mdx_epoch;  // Bumped by GPU writes that can change an indirect-count multi-draw's records or count (copy, fill, texture → buffer, dispatch; see mdx_run)
 // Writes since the last drain. A drain (mdi_wait: commit, then wait for the GPU) completes every GPU write encoded so far, so until the submission ends a CPU read of guest memory is
 // stale only when a GPU write encoded after the drain overlaps it. The submission-wide sets (pend, sbw) cannot tell before from after, so each later write is also kept here: storage
@@ -1212,6 +1215,7 @@ static id<MTL4ComputeCommandEncoder> blit_buf(uint64_t rlo, uint64_t rhi, uint64
     // their operations with everything before and after. Ordinary pools keep the
     // range-based batching, including separate Metal buffers over one CPU range.
     if (nvn_sparse_alias(rlo, rhi) || nvn_sparse_alias(wlo, whi)) { wlo = 0; whi = ~0ull; }
+    ixc_wr_note(wlo, whi);
     if (g_blit_ops && (g_bw_n == BW_MAX || g_br_n == BW_MAX || (rhi > rlo && bw_hit(rlo, rhi)) || bw_hit(wlo, whi) || br_hit(wlo, whi))) blit_barrier();
     g_bw_lo[g_bw_n] = wlo; g_bw_hi[g_bw_n++] = whi; g_blit_ops++; g_gp_copies++;
     if (rhi > rlo) { g_br_lo[g_br_n] = rlo; g_br_hi[g_br_n++] = rhi; }
@@ -10587,19 +10591,34 @@ static void fb_prepare(NvProg *pr) {
 // in the frame (Hyrule Warriors: Age of Calamity draws GPU-driven effects as indirect quads in its first battle), so the CPU cannot expand it at replay. A compute pass converts each record into
 // MTLDrawIndexedPrimitivesIndirectArguments in the frame arena, and the draw becomes an indexed indirect draw: arrays index the shared g_quad_ib / g_fan_ib with first as the base vertex,
 // indexed ones are expanded into a 32-bit list of at most IXC_CAP indices. The compute pass cannot run inside a render pass. When the first such draw is met, ixc_run converts it and every
-// such draw after it up to the next buffer write outside a render pass (copy, update / fill, texture → buffer, dispatch: they bump g_wr_epoch), so each record is read after its last writer
-// and the later draws find their conversion. Only a draw met inside an open render pass with no conversion yet splits that pass.
+// such draw after it up to the next dispatch or texture → buffer copy (they may write any address), so each record is read after its last writer and the later draws find their conversion.
+// A buffer copy, inline uniform update or fill on the way does not stop the walk: its destination is noted, and a later draw whose record or index buffer it overlaps is left for a
+// conversion of its own after it. A conversion stays valid until a write reaches what it read (g_ixc_gen, ixc_wr_note). Only a draw met inside an open render pass with no conversion yet
+// splits that pass. Before, the walk stopped at every inline uniform update and any buffer write made every conversion stale: Ocarina of Time's main colour pass, its models drawn as
+// indexed quads between uniform updates, was split into about 86 passes a frame (14,400 conversions, 12,228 splits in two minutes)
 #define IXC_MAX 128
 #define IXC_CAP (3 * 16384)
 typedef struct { uint64_t ind, ibuf; int32_t prim, itype; uint64_t args, ixb; uint32_t ixlen; } ixc_ent;   // args 0: the record could not be converted
 static ixc_ent g_ixc[IXC_MAX]; static int g_ixc_n; static uint64_t g_ixc_epoch, g_ixc_sub, g_ixc_runs, g_ixc_splits;
+// What a conversion reads: the record (16 bytes for arrays, 20 indexed, 8 mesh tasks) and, for indexed draws, at most IXC_CAP indices of the index buffer
+static uint64_t ixc_rec_len(int prim, int itype) { return prim == DM_PRIM_MESH_TASKS ? 8 : itype < 0 ? 16 : 20; }
+static uint64_t ixc_ib_len(int itype) { return itype < 0 ? 0 : (uint64_t)IXC_CAP * (itype == 0 ? 1 : itype == 1 ? 2 : 4); }
+static int ixc_overlaps(uint64_t ind, uint64_t ibuf, int prim, int itype, uint64_t lo, uint64_t hi) {
+    uint64_t rl = ixc_rec_len(prim, itype), il = ixc_ib_len(itype);
+    if (ind < hi && lo < ind + rl) return 1;
+    return il && ibuf && ibuf < hi && lo < ibuf + il;
+}
+static void ixc_wr_note(uint64_t lo, uint64_t hi) {
+    if (g_ixc_epoch != g_ixc_gen || g_ixc_sub != g_sub_serial) return;   // nothing valid to make stale
+    for (int i = 0; i < g_ixc_n; i++) if (ixc_overlaps(g_ixc[i].ind, g_ixc[i].ibuf, g_ixc[i].prim, g_ixc[i].itype, lo, hi)) { g_ixc_gen++; return; }
+}
 // The kernels: dm/gfx/msl/ixc.metal
 static int ixc_wanted(const p_draw *dw, const p_draw_idx *di) {
     if (dw) return dw->ind && (dw->prim == 6 || dw->prim == 7 || dw->prim == DM_PRIM_MESH_TASKS);
     return di->ind && (di->prim == 6 || di->prim == 7 || di->itype == 0);
 }
 static const ixc_ent *ixc_find(const p_draw *dw, const p_draw_idx *di) {
-    if (g_ixc_epoch != g_wr_epoch || g_ixc_sub != g_sub_serial) return NULL;
+    if (g_ixc_epoch != g_ixc_gen || g_ixc_sub != g_sub_serial) return NULL;
     uint64_t ind = dw ? dw->ind : di->ind, ib = dw ? 0 : di->ibuf; int prim = dw ? dw->prim : di->prim, it = dw ? -1 : di->itype;
     for (int i = 0; i < g_ixc_n; i++) if (g_ixc[i].ind == ind && g_ixc[i].ibuf == ib && g_ixc[i].prim == prim && g_ixc[i].itype == it) return &g_ixc[i];
     return NULL;
@@ -10619,16 +10638,26 @@ static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
     if (g_enc) { g_ixc_splits++; PD("M %llu indirect draw conversion: render pass split here", g_stat_pass); rp_end(); }
     ubd_land_compute();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
-    if (g_ixc_epoch != g_wr_epoch || g_ixc_sub != g_sub_serial || g_ixc_n > IXC_MAX - 8) { g_ixc_n = 0; g_ixc_epoch = g_wr_epoch; g_ixc_sub = g_sub_serial; }
+    if (g_ixc_epoch != g_ixc_gen || g_ixc_sub != g_sub_serial || g_ixc_n > IXC_MAX - 8) { g_ixc_n = 0; g_ixc_epoch = g_ixc_gen; g_ixc_sub = g_sub_serial; }
     int n0 = g_ixc_n; ixc_take(dw, di);
-    if (g_exec_next && g_ret_n <= 8) {   // Later draws in replay order (current list → callers → the rest of this submission), up to the next buffer write
+    if (g_exec_next && g_ret_n <= 8) {   // Later draws in replay order (current list → callers → the rest of this submission), up to the next write that may reach any address
         fz_cursor cur = {.p = g_exec_next, .ret_n = g_ret_n}; memcpy(cur.ret, g_ret, sizeof(*g_ret) * (size_t)g_ret_n);
         const uint8_t *q; op_hdr h; const void *a;
+        enum { IXW_MAX = 64 }; uint64_t wlo[IXW_MAX], whi[IXW_MAX]; int nw = 0;   // destinations of the buffer writes walked past
         for (int guard = 0; guard < 200000 && g_ixc_n < IXC_MAX && fz_next(&cur, &q, &h, &a); guard++) {
-            if (h.op == OP_DISPATCH || h.op == OP_COPY_B2B || h.op == OP_UPDATE_UB || h.op == OP_CLEAR_BUF || h.op == OP_COPY_T2B) break;
+            if (h.op == OP_DISPATCH || h.op == OP_COPY_T2B) break;
+            if (h.op == OP_COPY_B2B || h.op == OP_UPDATE_UB || h.op == OP_CLEAR_BUF) {
+                uint64_t d = 0, n = 0;
+                if (h.op == OP_COPY_B2B) { memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8); }
+                else { memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8); }   // update: dst, bytes; fill (p_clear_buf): addr, size
+                if (nw == IXW_MAX || !n || d > UINT64_MAX - n || nvn_sparse_alias(d, d + n)) break;
+                wlo[nw] = d; whi[nw++] = d + n; continue;
+            }
             p_draw dt; p_draw_idx it; const p_draw *d = h.op == OP_DRAW ? draw_rec(a, h.size, &dt) : NULL; const p_draw_idx *x = h.op == OP_DRAW_IDX ? draw_idx_rec(a, h.size, &it) : NULL;
-            if (d && ixc_wanted(d, NULL)) ixc_take(d, NULL);
-            else if (x && ixc_wanted(NULL, x)) ixc_take(NULL, x);
+            if (!(d && ixc_wanted(d, NULL)) && !(x && ixc_wanted(NULL, x))) continue;
+            uint64_t ind = d ? d->ind : x->ind, ib = d ? 0 : x->ibuf; int prim = d ? d->prim : x->prim, ity = d ? -1 : x->itype, hit = 0;
+            for (int w = 0; w < nw && !hit; w++) hit = ixc_overlaps(ind, ib, prim, ity, wlo[w], whi[w]);
+            if (!hit) ixc_take(d, x);   // written on the way: converted after that write instead
         }
     }
     int n = g_ixc_n - n0, na = 0; if (n <= 0) return;
@@ -11639,7 +11668,7 @@ static id<MTLTexture> ndve_image(NvShader *cs, unsigned slot, tex_t *desc) {
 }
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
-    g_wr_epoch++; g_mdx_epoch++;
+    g_wr_epoch++; g_mdx_epoch++; g_ixc_gen++;
     if (!S.cprog) { RED_ONCE(27, "no program bound before the dispatch"); return; }
     // DispatchComputeIndirect: the group counts {x, y, z} at ind (MTLDispatchThreadgroupsIndirectArguments) are usually written by the GPU earlier in the frame; Metal reads them when the dispatch runs
     void *ib = NULL; uint64_t io = 0, ig = 0;
@@ -11747,7 +11776,7 @@ static int rb_swap_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_
 static int rb_copy_shift(const tex_t *t, id<MTLTexture> mt) { return mt.buffer ? 0 : rb_packed_shift(t->d.format); }
 static void copy_t2b(const p_copy_b2t *c) {
     rp_flush();   // Materialize pending clears before reading, matching copy_t2t.
-    g_wr_epoch++; g_mdx_epoch++;
+    g_wr_epoch++; g_mdx_epoch++; g_ixc_gen++;
     if (c->tex) xv_check(c->tex->serial, c->has_view && c->view.set_levels ? c->view.base_level : 0, c->has_view && c->view.set_layers ? c->view.min_layer : 0, "texture-to-buffer copy");
     id<MTLTexture> t = tex_mtl(c->tex);
     if (!t) return;
