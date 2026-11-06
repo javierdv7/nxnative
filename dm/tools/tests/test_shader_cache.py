@@ -34,7 +34,7 @@ class FullDrive(Base):
         self.assertIsNone(self.store.get('x'))
 
 
-    def test_a_cache_on_a_full_drive_opens_empty_and_takes_nothing(self):   # opening needs room for the write-ahead log's index: 'disk I/O error'
+    def test_a_cache_on_a_full_drive_opens_empty_and_takes_nothing(self):   # opening needs room for the write-ahead log's index: 'disk I/O error'; the drive is the one the file is on, past a symlink
         from unittest import mock
         real = shader_cache.sqlite3.connect
         class Conn:

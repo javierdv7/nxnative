@@ -34,7 +34,7 @@ class Store:
             for s in SCHEMA: self.db.execute(s)
         except sqlite3.DatabaseError as e:
             if self._damage(e): return
-            if not isinstance(e, sqlite3.OperationalError) or shutil.disk_usage(os.path.dirname(os.path.abspath(self.path))).free > 64 << 20: raise
+            if not isinstance(e, sqlite3.OperationalError) or shutil.disk_usage(os.path.dirname(os.path.realpath(self.path))).free > 64 << 20: raise
             # A full drive: opening needs room for the write-ahead log's index, so it fails as 'disk I/O error'. The build goes on with an empty cache that takes no entry, its file untouched
             with contextlib.suppress(sqlite3.Error): self.db.close()
             self.say(f'[RED] the shader compile cache {self.path} cannot be opened on a full drive, the build goes on without it: {e}'); self.full = True
