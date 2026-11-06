@@ -1987,10 +1987,15 @@ static int fstep_cpu_slowed(uint64_t presents) {
 // Whether late frames may raise the hold above the cap's vsyncs (profile fps_hold, DM_FPS_HOLD=on / off). Off for a game whose updates do not wait for the presents and step
 // by the cap whatever the hold (Age of Calamity): holding frames there only paces the screen, and an iPhone lowers the GPU clock to the longer hold, so frames got slower and
 // the hold never came back (battle GPU 10 → 41 ms at the same draws, 20 fps at thermal state 0); off, each frame is shown as soon as it is ready
+// DM_FPS_HOLD=<n> (2 to 4) lets late frames raise the hold up to n vsyncs only. The real time a frame longer than that loses is still paid back one vsync a frame (nvn_fstep debt,
+// up to fps_hold_max): on a Mac the GPU idles through a longer hold and macOS lowers its clock (Ocarina of Time on an M4: the same frame 1.6-2.6 times its GPU time at hold 3),
+// so a hold of 3 or 4 made the frames it waited for slower and the rate settled near 20 fps
+static int g_fs_hold_n;
 static int fstep_hold(void) {
     static int h = -1;
     if (h < 0) {
         const char *e = getenv("DM_FPS_HOLD"); h = e ? strcmp(e, "off") != 0 : DM_GAME_FPS_HOLD;
+        if (e && e[0] >= '2' && e[0] <= '9' && !e[1]) { g_fs_hold_n = e[0] - '0'; LOG("[nvn] frame step: late frames raise the hold up to %d vsyncs (DM_FPS_HOLD)", g_fs_hold_n); }
         if (!h) LOG("[nvn] frame step: frames are not held longer than the cap's vsyncs (%s)", e ? "DM_FPS_HOLD" : "game profile fps_hold");
     }
     return h;
@@ -2006,6 +2011,7 @@ static void fstep_tick(const win_t *o, int c) {
     double cpu = shown - pw / v, cost = cpu > gpu ? cpu : gpu;
     int kmin = fstep_hz() / c, kmax = fps_high() ? 2 : !fstep_hold() ? kmin : kmin >= 2 ? 2 : FSTEP_MAX, k0 = g_fs.k,   // at 120 fps a late frame must step down whatever fps_hold says: the game steps by the target
          kmin0 = g_fs.kmin, probe0 = g_fs.probe;
+    if (g_fs_hold_n && kmax > g_fs_hold_n) kmax = g_fs_hold_n > kmin ? g_fs_hold_n : kmin;
     int fixed = dm_fps_state ? (int)__atomic_load_n((uint32_t *)(dm_fps_state + 0x24), __ATOMIC_RELAXED) : 0;
     uint64_t probes0 = g_fs.probes, failed0 = g_fs.failed;
     // A screen whose rate is not a multiple of 60 (144, 165 Hz) shows the link's 1/60 s ticks on their nearest refreshes (nvn_mtl.m link_range), so a frame on time can show for one
