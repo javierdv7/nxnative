@@ -43,7 +43,43 @@ def frame_step(ctx):
     emit(B(here(), 0x346c5c4))
     fs_put(0x346c5c0, [B(0x346c5c0, start)], 'GameFrameworkOunce interval setter: the host\'s step unless the game fixes a lower rate itself (state page target fps; 0 = the game\'s interval)')
 
-FRAME_STEP = {'e0f3ccfaf50065ae4ea01eb5aeb13b1a': frame_step}
+# Render scale (DM_RENDER_SCALE, state +0x10, dm/host/loader.c): the engine stores the final scale of its 3D views, after its dynamic resolution and fixed-mode choice, at
+# main+0x31d3f48 (str s0,[x20,#0xe5c]). A factor below 1.0 replaces it, so the size is fixed at that fraction and the dynamic resolution is off, as the host's switch means on
+# Breath of the Wild and Tears of the Kingdom; 1.0 (the default) keeps the game's store. The stub takes the factor into s0 as well, as if the game had chosen it.
+# From upstream PR #1497 (a ceiling there: fmin of the game's and the host's), which found the store; open: what size 1.0 is (the game's largest)
+def render_scale(ctx):
+    site = 0x31d3f48
+    ctx.site(site, '805e0ebd')  # str s0,[x20,#0xe5c]
+    start = ctx.here()
+    ctx.emit(0xadbf7ffe)  # stp q30,q31,[sp,#-32]!
+    ctx.emit(0xa9bf47f0)  # stp x16,x17,[sp,#-16]!
+    ctx.emit(ADRP(16, ctx.here(), ctx.state))
+    for word in (
+        0xd53b4211,  # mrs x17,nzcv: the original store leaves flags intact
+        0xbd40121e,  # ldr s30,[x16,#0x10]: host scale
+        0x1e2023c8,  # fcmp s30,#0
+        0x540000ed,  # b.le original: an unset state keeps the game
+        0x1e2e101f,  # fmov s31,#1
+        0x1e3f23c0,  # fcmp s30,s31
+        0x5400008a,  # b.ge original: 1.0 keeps the game's scale
+        0x1e2043c0,  # fmov s0,s30: the host's fixed scale
+        0xbd0e5e80,  # str s0,[x20,#0xe5c]
+        0x14000002,  # b restore
+        0xbd0e5e80,  # original: str s0,[x20,#0xe5c]
+        0xd51b4211,  # restore: msr nzcv,x17
+        0xa8c147f0,  # ldp x16,x17,[sp],#16
+        0xacc17ffe,  # ldp q30,q31,[sp],#32
+    ):
+        ctx.emit(word)
+    ctx.emit(B(ctx.here(), site + 4))
+    ctx.put(site, [B(site, start)], 'final 3D view scale: the host render scale fixes it below 1.0 (1.0 = the game\'s dynamic resolution)')
+    ctx.render_scale = 1
+
+
+def main_e0f3(ctx): frame_step(ctx); render_scale(ctx)
+
+
+FRAME_STEP = {'e0f3ccfaf50065ae4ea01eb5aeb13b1a': main_e0f3}
 
 # How general each patch is and could be (dm/tools/docs_patches.py "Binding", listed in docs/agents/game-patches.md): what, its binding now, the loosest it could have (goal),
 # purpose, why; blocked or kept: why the gap stays open (cannot close yet, or left open on purpose); checked: what was checked on game files (else a judgement)
@@ -51,4 +87,8 @@ BINDING = [
     {'what': 'frame step at the framework interval setter (sead::GameFrameworkOunce)', 'now': 'build', 'goal': 'game', 'purpose': 'frame rate',
      'why': "the game's own framework code at fixed addresses",
      'blocked': 'frame-step stubs have no function-matched form yet'},
+    {'what': 'render scale at the final 3D view scale store', 'now': 'build', 'goal': 'game', 'purpose': 'rendering',
+     'why': "the game's final scale store follows its dynamic and fixed-mode choices",
+     'blocked': 'the store and its role are verified for this main build only',
+     'checked': 'v131072 main E0F3CCFAF50065AE4EA01EB5AEB13B1A, original store and surrounding code (upstream PR #1497), 2026-11-06'},
 ]
