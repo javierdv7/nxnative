@@ -65,6 +65,18 @@ For a run past the opening, copy the committed save folder to the new run's `DM_
   5. `up_big_src` created and destroyed a temporary `newBufferWithBytesNoCopy` `MTLBuffer` per upload batch (driving `res_commit` to 21.5 ms/frame = 6,439.5 ms per 300 frames in Hyrule Market and Kakariko Village), while `g_pkg_alias`'s 512-entry ring cap, `hm_del_id` on hit and exclusion of `!is_live` (`treg_retired`) descriptors caused 965,532 `g_ghost` puts (32 `g_ser_gen` bumps/frame); caching 16 MB (`BIG_S`) chunks in `g_up_big_src` and keeping `g_pkg_alias` unbounded with range-overlap invalidation eliminates both bottlenecks.
   6. `ft_add` excludes `NVN_MEMORY_POOL_FLAGS_VIRTUAL` pools so GPU-written sparse render targets stay on the placement-sparse GPU path when `tex_dirty_upload` is enabled.
 
+- The game played slow whenever a frame took longer than 16.7 ms: it turns its own frame-rate controller off and fixes the present interval at 1 (`main+0x33723d0`), and its updates are once a frame. A frame step stub at the framework's interval setter `main+0x346c5c0` (this profile's `patches.py`, build `e0f3ccfa…`, `fps_target 60`) hands the game the host's step. With holds up to 3 vsyncs Kokiri Forest ran at 0.709 of real time on an Apple M4; past 3 vsyncs the time was lost, [Frames longer than three vsyncs lose game time](../../../docs/reference/frame-rate.md#frames-longer-than-three-vsyncs-lose-game-time) (`fps_hold_max 4`). Open: the field the logic reads for its time step was not found; the speed was judged by eye and by the host's game-time ratio.
+- Most indirect quad and 8-bit-index draws split their render pass: [Indirect draw conversions made stale by every buffer write](../../../docs/reference/rendering.md#indirect-draw-conversions-made-stale-by-every-buffer-write) (partly resolved: 85% → 65% of conversions split).
+
+## Mac (Apple M4, 24 GB): state and measurements
+
+Run from the update-only NUP (v131072) with `DM_OPMODE=0` (handheld, 1920×1080 output), `DM_UPSCALER=metalfx`, `DM_NVN_NDVE_MOVIE_DIRECT=1`, `DM_NVN_GPU_TS=segment`. Goal: a steady 40 fps at 1080p.
+
+- Movies: 60 fps, in sync, with the direct NDVE scale (the NDVE network took 100–160 ms of GPU a frame on this GPU).
+- Kokiri Forest: 15–30 fps. GPU busy 20–37 ms a frame (handheld and docked alike: the cost does not follow the resolution, and the game's dynamic resolution falls to 683×384 / 854×480); the CPU's translation 13–18 ms a frame (about 156,000 instructions a draw, 1,250 draws); GPU idle gaps of up to 15 ms waiting for submissions. One 854×480 pass of terrain, a leaf effect and about 11 full-screen draws takes 6–11 ms twice a frame; the frame's compute (foliage, effects) about 7 ms, spread over many dispatches.
+- Memory: footprint 14–17 GB in the forest. With other apps open the Mac swapped 11–12 GB, which made the pipeline prepare step take 21 s instead of 0.5 s and slowed frames.
+- Pipelines: with the archive warm, a revisited area compiles nothing (0 bases, 0 stand-in draws in a 5-minute walk); a new area still compiles on the spot and draws with stand-ins meanwhile (white or missing foliage, open).
+
 ## Open
 
 - The GPU's 14–21 ms a frame in Kokiri Forest occasionally drops frames below 60 fps; TBDR optimizations are off for this bindless game (`DM_NVN_TBDR=1` turns them on), and attachments load and store about 330 MB a frame.
