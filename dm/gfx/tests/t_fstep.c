@@ -72,6 +72,10 @@ int main(void) {
         snprintf(b, sizeof b, "0.5 s stall: 15 vsyncs paid back, %.0f dropped, not replayed (paid %llu)", m.s.dropped, (unsigned long long)m.s.paid);
         check(m.s.dropped == 14 && m.s.paid == 15 && m.real - m.game == 14 && m.s.k == 1, b);
     }
+    {   sim m = {0}; m.s.step_max = 4; run(&m, 60, 0.5, 1, 2, 0); run(&m, 600, 3.3, 1, 2, 0);   // Ocarina of Time at 1080p on an M4: 55 ms frames, the hold kept at 2 (DM_FPS_HOLD=2)
+        snprintf(b, sizeof b, "frames longer than the hold + 1: the debt is paid as fast as it grows, none dropped (dropped %.1f, behind %.1f vsyncs)", m.s.dropped, m.real - m.game);
+        check(m.s.dropped == 0 && m.real - m.game < FSTEP_DEBT_MAX, b);
+    }
     {   sim m = {0}; run(&m, 60, 0.5, 1, 3, 0); run(&m, 300, 1.3, 1, 3, 0);   // a heavy scene: 30 fps
         check(m.s.k == 2, "heavy scene: hold 2");
         run(&m, 29, 0.6, 1, 3, 0);

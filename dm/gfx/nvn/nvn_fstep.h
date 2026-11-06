@@ -131,8 +131,14 @@ static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int km
     else if ((slow || nvn_fstep_same(s)) && s->k > kmin && s->since >= s->hold && !s->trial) {   // probe: straight to kmin, so the controller sees the whole deadline
         s->k = kmin; s->downs++; s->probes++; s->trial = FSTEP_RUN; s->probe = 1; s->grace = FSTEP_GRACE; s->fit_run = s->late_run = 0; s->pa = s->pb = 0; s->plate = s->ptotal = 0;
     }
-    s->step = s->k + (s->debt >= 1 && s->k < (s->step_max ? s->step_max : 3));   // paying back never hands the game a step above the longest it takes
-    s->paid += s->step > s->k;
+    // Paying back: one vsync a frame, so a hitch is paid back smoothly. Past half of FSTEP_DEBT_MAX the debt is paid as fast as the longest step the game takes allows: frames
+    // longer than k + 1 (Ocarina of Time at a hold of 2 with 50-60 ms frames at 1080p on an M4) made debt faster than one a frame paid it, it reached FSTEP_DEBT_MAX and the
+    // rest was dropped, so the game ran slow. Now the debt stays near the threshold (about 0.12 s behind) and game time keeps to real time
+    int smax = s->step_max ? s->step_max : 3, pay = s->debt >= 1;
+    if (s->debt > FSTEP_DEBT_MAX / 2) pay = (int)(s->debt - FSTEP_DEBT_MAX / 2) + 1;
+    if (pay > smax - s->k) pay = smax - s->k > 0 ? smax - s->k : 0;
+    s->step = s->k + pay;   // never a step above the longest the game takes
+    s->paid += s->step - s->k;   // vsyncs paid back
     return s->step;
 }
 
