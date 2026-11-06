@@ -96,7 +96,12 @@ class Store:
             except BaseException:
                 if self.db.in_transaction: self.db.rollback()
                 raise
-            else: self.db.commit()
+            else:
+                try: self.db.commit()
+                except sqlite3.OperationalError as e:   # a full drive fails at the commit too (a batch of entries written straight, as dmsh_build's): the entries are lost, the build goes on
+                    if any(w in str(e) for w in _DAMAGED) or 'full' not in str(e): raise
+                    if self.db.in_transaction: self.db.rollback()
+                    if not self.full: self.full = True; self.say(f'[RED] the shader compile cache {self.path} cannot be written, the build goes on without it: {e}')
 
     def prune_shaders(self, keep, since):
         """Remove the shader/<64 hex digits>/ entries not in keep and all written before since, and the bytes nothing names any more, giving their pages back. Other names stay.
