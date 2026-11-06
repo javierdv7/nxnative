@@ -62,6 +62,18 @@ Run headless, `DM_CTL` at a control file. The work folder has `boot.sh <secs> <l
 
 From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. From `save_ref`: at about 58 s `A~0.2`, 5 s later `A~0.2` (Load), 30 s later three `A~0.1` 3 s apart, then 12 s to the bridge outside Link's house. There `LUp~3.5`, `A~0.2` (Climb Down) and `LDown~4` three or four times reach the village floor.
 
+- The game played slow whenever a frame took longer than 16.7 ms: it turns its own frame-rate controller off and fixes the present interval at 1 (`main+0x33723d0`), and its updates are once a frame. A frame step stub at the framework's interval setter `main+0x346c5c0` (this profile's `patches.py`, build `e0f3ccfa…`, `fps_target 60`) hands the game the host's step. With holds up to 3 vsyncs Kokiri Forest ran at 0.709 of real time on an Apple M4; past 3 vsyncs the time was lost, [Frames longer than three vsyncs lose game time](../../../docs/reference/frame-rate.md#frames-longer-than-three-vsyncs-lose-game-time) (`fps_hold_max 4`). Open: the field the logic reads for its time step was not found; the speed was judged by eye and by the host's game-time ratio.
+- Most indirect quad and 8-bit-index draws split their render pass: [Indirect draw conversions made stale by every buffer write](../../../docs/reference/rendering.md#indirect-draw-conversions-made-stale-by-every-buffer-write) (partly resolved: 85% → 65% of conversions split).
+
+## Mac (Apple M4, 24 GB): state and measurements
+
+Run from the update-only NUP (v131072) with `DM_OPMODE=0` (handheld, 1920×1080 output), `DM_UPSCALER=metalfx`, `DM_NVN_NDVE_MOVIE_DIRECT=1`, `DM_NVN_GPU_TS=segment`. Goal: a steady 40 fps at 1080p.
+
+- Movies: 60 fps, in sync, with the direct NDVE scale (the NDVE network took 100–160 ms of GPU a frame on this GPU).
+- Kokiri Forest: 15–30 fps. GPU busy 20–37 ms a frame (handheld and docked alike: the cost does not follow the resolution, and the game's dynamic resolution falls to 683×384 / 854×480); the CPU's translation 13–18 ms a frame (about 156,000 instructions a draw, 1,250 draws); GPU idle gaps of up to 15 ms waiting for submissions. One 854×480 pass of terrain, a leaf effect and about 11 full-screen draws takes 6–11 ms twice a frame; the frame's compute (foliage, effects) about 7 ms, spread over many dispatches.
+- Memory: footprint 14–17 GB in the forest. With other apps open the Mac swapped 11–12 GB, which made the pipeline prepare step take 21 s instead of 0.5 s and slowed frames.
+- Pipelines: with the archive warm, a revisited area compiles nothing (0 bases, 0 stand-in draws in a 5-minute walk); a new area still compiles on the spot and draws with stand-ins meanwhile (white or missing foliage, open).
+
 ## Open
 
 - Open: 2 of about 42,850 shaders do not compile (`1f78730053feb036`, `e172bd7ec218ab8e`: `bracket nesting level exceeded maximum of 256`). Neither has shown up in a run so far.

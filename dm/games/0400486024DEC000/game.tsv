@@ -36,6 +36,13 @@ sys_resource	0x3000000
 shader_groups	/Shader/=shader /Effect/=effect /Lib/=lib /UI/=layout
 shader_note	Ocarina of Time shaders
 
+# ---- Frame rate ----
+# The frame step (patches.py, main e0f3ccfa…): the host picks each frame's vsyncs and hands them to sead::GameFrameworkOunce's interval setter, so game time keeps to real
+# time when 60 fps does not hold (it played slow at 20-40 fps: the game fixes interval 1 itself). Unverified that the logic steps by the interval (the game note)
+fps_target	60
+# A frame longer than 50 ms used to lose time (the hold stopped at 3 vsyncs): game time 0.71 of real time at 20 fps on an M4. The interval setter takes 4 (fps = 60 / interval)
+fps_hold_max	4
+
 # ---- Graphics ----
 # agl wraps its clears in render conditions on Donkey Kong Bananza and Splatoon Raiders; the same library here
 render_cond	on

@@ -874,6 +874,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) (its GPU-driven effects are indirect quads).
 - **Check:** `DM_NVN_IXCLOG=<n>` logs the first n conversions (record → arguments) once the GPU has run them.
 
+### Indirect draw conversions made stale by every buffer write
+
+- **Symptom:** the log's `indirect draw conversion: N times, render pass split M times` with M close to N: most indirect quads, fans and 8-bit-index draws end the render pass they are in.
+- **Cause:** `ixc_run`'s walk ahead stopped at the first inline uniform update, copy or fill, and any buffer write (`g_wr_epoch`, bumped also when deferred uniform updates land) made every conversion stale, though none of them wrote a record or an index buffer. A game that updates uniforms between such draws got a conversion, and a pass split, for nearly each of them.
+- **Fix:** conversions have their own generation (`g_ixc_gen`): a dispatch or a texture → buffer copy bumps it (they may write any address), a copy, update or fill (`blit_buf` → `ixc_wr_note`) only when its destination overlaps a converted record or the index range a conversion reads (`ixc_overlaps`: 16, 20 or 8 bytes of record, at most `IXC_CAP` indices). The walk ahead goes past copies, updates and fills, noting their destinations, and leaves a later draw whose record or indices one of them writes to a conversion of its own after it. Sparse destinations stop the walk as before.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md): 12,228 splits in 14,400 conversions before (Kokiri Forest), 11,724 in 18,000 after (open: what still splits; `DM_NVN_IXCLOG`).
+- **Check:** `t_mesh_indirect` and `t_nvn` (234 checks) in `dm/gfx/tests`.
+
 ### Indirect-count multi-draws
 
 - **Symptom:** an empty G-buffer pass (the title screen showed only the UI); later, the submitting thread waiting for the GPU before each such draw (36–54 fps in Kamura Village on an iPhone). MIO also reported missing level geometry with maxima of 4,594 and 8,192 draws.
