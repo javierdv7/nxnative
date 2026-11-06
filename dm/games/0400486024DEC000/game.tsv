@@ -42,6 +42,11 @@ shader_note	Ocarina of Time shaders
 fps_target	60
 # A frame longer than 50 ms used to lose time (the hold stopped at 3 vsyncs): game time 0.71 of real time at 20 fps on an M4. The interval setter takes 4 (fps = 60 / interval)
 fps_hold_max	4
+# The game waits on its frame's fence, so at a 3-vsync hold the GPU idles between frames and macOS keeps its clock at the Medium state (Instruments, M4): the same Kokiri Forest
+# frame took 30-33 ms of GPU there and 23-25 ms with the GPU kept busy. Snapshots free the swapchain texture at once and the encode thread shortens the serial chain
+# (submit+present 10.5 -> 6.5 ms a frame); late frames 1,611 -> 623 in 80 s (the game note)
+present_snap	on
+enc_thread	on
 
 # ---- Graphics ----
 # agl wraps its clears in render conditions on Donkey Kong Bananza and Splatoon Raiders; the same library here
