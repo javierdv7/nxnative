@@ -19,6 +19,21 @@ class Base(unittest.TestCase):
     def blobs(self): return self.store.db.execute('SELECT count(*) FROM blob').fetchone()[0]
 
 
+class FullDrive(Base):
+    def test_a_batch_whose_commit_finds_the_drive_full_is_one_red_line(self):   # Ocarina of Time's build: dmsh_build's batch died at the commit with the cache volume full
+        real = self.store.db
+        class Db:
+            def __getattr__(s, k): return getattr(real, k)
+            def commit(s): raise shader_cache.sqlite3.OperationalError('database or disk is full')
+        self.store.db = Db()
+        try:
+            with self.store.batch(): self.store.put('x', b'1')
+            with self.store.batch(): self.store.put('y', b'2')
+        finally: self.store.db = real
+        self.assertTrue(self.store.full); self.assertEqual(sum('[RED]' in s for s in self.said), 1)
+        self.assertIsNone(self.store.get('x'))
+
+
 class Entries(Base):
     def test_in_and_out(self):
         self.store.put('x/y', b'bytes')
