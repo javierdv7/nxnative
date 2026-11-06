@@ -34,6 +34,19 @@ class FullDrive(Base):
         self.assertIsNone(self.store.get('x'))
 
 
+    def test_a_cache_on_a_full_drive_opens_empty_and_takes_nothing(self):   # opening needs room for the write-ahead log's index: 'disk I/O error'
+        from unittest import mock
+        real = shader_cache.sqlite3.connect
+        class Conn:
+            def __init__(s, *a, **k): s.c = real(':memory:')
+            def execute(s, *a): raise shader_cache.sqlite3.OperationalError('disk I/O error')
+            def close(s): s.c.close()
+        Usage = type('U', (), {'free': 1 << 20})
+        with mock.patch.object(shader_cache.sqlite3, 'connect', side_effect=lambda p, **k: Conn() if p != ':memory:' else real(p, **k)), mock.patch.object(shader_cache.shutil, 'disk_usage', return_value=Usage()):
+            said = []; st = shader_cache.Store(self.root / 'full.db', said.append)
+        st.put('x', b'1' * 100000); self.assertIsNone(st.get('x')); self.assertTrue(st.full)
+        self.assertEqual(sum('[RED]' in s for s in said), 1); st.close()
+
 class Entries(Base):
     def test_in_and_out(self):
         self.store.put('x/y', b'bytes')
