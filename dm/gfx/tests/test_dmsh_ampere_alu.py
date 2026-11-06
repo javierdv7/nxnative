@@ -124,7 +124,6 @@ class HalfImmediate(Alu):
         self.assertRegex(msl, r'\b2\.0\b')
 
 
-<<<<<<< HEAD
 class HalfSwizzle(Alu):
     """A half-pair operand's swizzle (A 74..75, the 32 slot 60..61, the 64 slot 81..82: 0 as is, 1 .F32, 2 .H0_H0, 3 .H1_H1) applies to a constant too: nvdisasm prints
     HMUL2 R37, R37.H0_H0, c[0x0] [0x168].H0_H0 (bits 60..61 = 2), a half scaled by one half of a uniform. Read as is, the high lane took the constant's other half.
@@ -194,7 +193,7 @@ class DirectedRounding(Alu):
 
     def test_f2f_to_nearest_is_plain(self):
         self.assertNotIn('& 65535', self.kept(self.F2F_RN, srcs=(19,)))
-=======
+
 class MufuTurns(Alu):
     """MUFU.SIN / COS take turns (sm_70 and later): NVIDIA reduces them exactly, so the angle comes from x - floor(x); 2pi x in 32 bits lost the fraction as x grew
     (a GPU cross-check against sin(2pi frac x): errors up to 7e-4 at a few thousand turns, none with the reduction). MUFU.TANH (op 9) is translated, not refused.
@@ -214,7 +213,6 @@ class MufuTurns(Alu):
     def test_tanh_is_translated(self):
         msl = self.kept(self.TANH, srcs=(19,))
         self.assertIn('exp2(', msl)
->>>>>>> 09bebf0f (MUFU.SIN / COS reduce their turns exactly; MUFU.TANH is translated)
 
 
 class CompareFtz(Alu):
