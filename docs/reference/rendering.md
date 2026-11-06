@@ -1486,6 +1486,14 @@ Digimon Story Cyber Sleuth: Complete Edition (Media.Vision's MVGL engine, SDK 6.
 - **Check:** `make -C dm/gfx/tests GAME=0400486024DEC000 check_t_upgrade_alias` verifies that `treg_tex` on a retired descriptor overlapping a live alias returns `nil` without allocating a new `MTLTexture`, keeps the live texture in `g_serial`, and marks the retired slot `gone`.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) (`0400486024DEC000`, `v131072`).
 
+### Texture takeovers stalling the presentation thread
+
+- **Symptom:** while the game streams new textures (walking into new scenery), frames go 100–400 ms without a present; `NVN submit+present` reaches the same, with no pipeline compiles or uploads in the `[longframe]` line. `DM_HITCH_DUMP` shows the presentation thread in host work, `tex_by_id` → `treg_tex` → `tex_mtl_` → `alias_take_over` → `alias_note_evicted` (often inside `class_conformsToProtocol`), and the game's other threads waiting in `mtl_reg_tex` on the registry lock.
+- **Cause:** each texture a takeover evicted got its own walk over every serial the host holds (`g_by_serial`, `g_ghost`, `g_ghost_active`), and each entry was tested with `conformsToProtocol:@protocol(MTLTexture)`, which walks the class's protocol lists in the Objective-C runtime. With tens of thousands of serials and several evictions per new texture, one registration took hundreds of milliseconds under the registry lock.
+- **Fix:** `alias_note_evicted_set` gathers the evicted textures of one takeover or one pool's Finalize and walks the tables once, testing membership in that set; `obj_is_mtl_texture` answers the protocol question per class from a small table (also used by `mtl_tex_gpu_owned`, `tex_gpu_touched` and the view check in `tex_mtl_`).
+- **Check:** `make -C dm/gfx/tests GAME=0400486024DEC000 t_nvn t_image_alias t_pool_heap` (234, 318 and 19 checks). On Ocarina of Time's 90 s Kokiri Forest walk (`DM_HITCH_DUMP=150`), the dumps went 16 → 6, none of them left in host texture code, and the longest `submit+present` of the walk's 300-frame windows 347 → 53 ms.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#mac-apple-m4-24-gb-state-and-measurements) (Mac M4); resolved.
+
 ### iOS layouts: portrait, a half-folded Duo, iPad windows
 
 - **Symptom:** portrait gameplay overlaps the touch controls, touch coordinates land outside the game picture, or a TV's picture renders at 4K again after a layout pass.
