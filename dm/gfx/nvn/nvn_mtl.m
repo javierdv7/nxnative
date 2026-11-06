@@ -2015,7 +2015,26 @@ static CFMutableSetRef g_alias_set;   // Textures in the sharing table (non-owni
 static _Atomic uint64_t g_alias_evicted;   // shared textures evicted on pool Finalize so far (for the memory report)
 static uint64_t g_stat_ghost_skip;   // finalized serials resolved to a shared texture without a ghost entry (tex_mtl_)
 static int alias_has(id o) { return g_alias_set && o && CFSetContainsValue(g_alias_set, (__bridge const void *)o); }
+// Whether o is a Metal texture, by its class: conformsToProtocol: walks the class's protocol lists in the Objective-C runtime (about a microsecond), and alias_note_evicted asks it of
+// every serial the host holds. Ocarina of Time streams textures as Link walks, each new one evicting older shared ones: 100-350 ms without a present, the presentation thread in
+// class_conformsToProtocol under the registry lock and the game's threads waiting on it. The answer is per class, and there are only a few classes: a small table remembers them
+static int obj_is_mtl_texture(id o) {
+    if (!o) return 0;
+    enum { N = 16 };
+    static _Atomic(uintptr_t) cls[N]; static _Atomic(unsigned char) yes[N]; static _Atomic unsigned next;
+    uintptr_t c = (uintptr_t)object_getClass(o);
+    for (unsigned i = 0; i < N; i++) {
+        uintptr_t k = atomic_load_explicit(&cls[i], memory_order_acquire);
+        if (!k) break;
+        if (k == c) return atomic_load_explicit(&yes[i], memory_order_relaxed);
+    }
+    int r = [o conformsToProtocol:@protocol(MTLTexture)];
+    unsigned i = atomic_fetch_add(&next, 1);
+    if (i < N) { atomic_store_explicit(&yes[i], (unsigned char)r, memory_order_relaxed); atomic_store_explicit(&cls[i], c, memory_order_release); }
+    return r;
+}
 static void alias_note_evicted(id o);
+static void alias_note_evicted_set(CFSetRef ev);
 // On memory pool Finalize, evict the textures built on that pool from the sharing table (collect the keys first, then delete: deletion shifts entries back). The sharing table used not to evict: Mario's pools stay for good, so entries are bounded;
 // Engage frees pools on scene changes and rebuilds on new ones, so the old pools' render targets and other private textures stayed in the table forever (about 0.8 GB more GPU memory over 850 s of the title demo), and linear textures built directly on a pool also kept the whole pool buffer alive.
 // Also, when a pool object's address is reused, old entries would hand a texture on the old storage to the new pool's texture at the same offset and description. Evicted textures go through deferred release; if the serial table still holds one, that is just one more reference
@@ -2034,15 +2053,19 @@ void mtl_alias_drop_pool(const void *pool) {
         if (k.pool != (uint64_t)(uintptr_t)pool) continue;
         alias_key *nk = realloc(ks, (n + 1) * sizeof *ks); if (!nk) break; ks = nk; ks[n++] = k;
     }
+    void **olds = n ? malloc(n * sizeof *olds) : NULL; uint32_t no = 0;
+    CFMutableSetRef ev = n ? CFSetCreateMutable(NULL, n, NULL) : NULL;
     for (uint32_t j = 0; j < n; j++) {
         void *old = nvn_hm_del(&g_alias, &ks[j]);
         if (!old) continue;
         nvn_hm_del(&g_alias_seen, &ks[j]);
-        id o = CFBridgingRelease(old);
-        if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
-        alias_note_evicted(o);
-        defer_obj_release(o);
+        if (g_alias_set) CFSetRemoveValue(g_alias_set, old);
+        if (olds) { CFSetAddValue(ev, old); olds[no++] = old; } else { id o = CFBridgingRelease(old); alias_note_evicted(o); defer_obj_release(o); }
     }
+    alias_note_evicted_set(ev);
+    if (ev) CFRelease(ev);
+    for (uint32_t j = 0; j < no; j++) defer_obj_release(CFBridgingRelease(olds[j]));
+    free(olds);
     if (n) atomic_fetch_add(&g_alias_evicted, n);
     uint32_t pn = 0; alias_key *pks = NULL;
     for (uint32_t i = 0; i < g_pkg_alias.cap; i++) {
@@ -2086,15 +2109,27 @@ static int alias_overlaps(const alias_key *nk) {
     }
     return 0;
 }
-static void alias_note_evicted(id o) {
+// The serials that resolve to an evicted texture or to a view of one get a note (ser_note), so the texture ID views cached for them are rebuilt. One pass over the tables for every
+// texture a takeover or a pool's Finalize evicts (they number up to a few hundred): one pass each made a walk into new scenery in Ocarina of Time stall for 100-350 ms (obj_is_mtl_texture)
+static void alias_note_evicted_set(CFSetRef ev) {
+    if (!ev || !CFSetGetCount(ev)) return;
     nvn_hmap *tables[] = {&g_by_serial, &g_ghost, &g_ghost_active};
     for (unsigned j = 0; j < sizeof tables / sizeof tables[0]; j++) for (uint32_t i = 0; i < tables[j]->cap; i++) {
-        if (!tables[j]->vals[i]) continue;
-        id v = (__bridge id)tables[j]->vals[i];
-        if (v != o && (![v conformsToProtocol:@protocol(MTLTexture)] || ((id<MTLTexture>)v).parentTexture != o)) continue;
+        const void *vp = tables[j]->vals[i];
+        if (!vp) continue;
+        if (!CFSetContainsValue(ev, vp)) {
+            __unsafe_unretained id v = (__bridge id)vp;
+            if (!obj_is_mtl_texture(v)) continue;
+            __unsafe_unretained id par = ((id<MTLTexture>)v).parentTexture;
+            if (!par || !CFSetContainsValue(ev, (__bridge const void *)par)) continue;
+        }
         uint64_t serial; memcpy(&serial, tables[j]->keys + (size_t)i * tables[j]->klen, sizeof serial);
         ser_note(serial);
     }
+}
+static void alias_note_evicted(id o) {
+    CFMutableSetRef ev = CFSetCreateMutable(NULL, 1, NULL); CFSetAddValue(ev, (__bridge const void *)o);
+    alias_note_evicted_set(ev); CFRelease(ev);
 }
 static void alias_take_over(const alias_key *nk) {
     if (!nk->pool) return;
@@ -2111,13 +2146,19 @@ static void alias_take_over(const alias_key *nk) {
         if (k.off + (int64_t)kl.size <= lo || (seen && g_fence + 1 - seen < ALIAS_IDLE) || serial_holds(&g_by_serial, (__bridge id)g_alias.vals[i])) continue;
         ks[n++] = k;
     }
+    void *olds[16]; uint32_t no = 0;
+    CFMutableSetRef ev = n ? CFSetCreateMutable(NULL, n, NULL) : NULL;
     for (uint32_t j = 0; j < n; j++) {
         void *old = nvn_hm_del(&g_alias, &ks[j]);
         if (!old) continue;
         nvn_hm_del(&g_alias_seen, &ks[j]);
-        id o = CFBridgingRelease(old);
-        if (g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
-        alias_note_evicted(o);
+        if (g_alias_set) CFSetRemoveValue(g_alias_set, old);
+        CFSetAddValue(ev, old); olds[no++] = old;
+    }
+    alias_note_evicted_set(ev);
+    if (ev) CFRelease(ev);
+    for (uint32_t j = 0; j < no; j++) {
+        id o = CFBridgingRelease(olds[j]);
         if (serial_holds(&g_ghost, o) || serial_holds(&g_ghost_active, o)) defer_obj_unref(o); else defer_obj_release(o);
     }
     if (n) atomic_fetch_add(&g_alias_taken, n);
@@ -3499,7 +3540,7 @@ static char g_bcrt_gpu_key;
 // The GPU owns the texture's content: its host texture was made to be rendered into or written by shaders (nvn_ft_poll in hle_nvn.c never re-uploads such a texture from guest memory)
 int mtl_tex_gpu_owned(uint64_t serial) {
     __unsafe_unretained id o = tex_get(serial);
-    if (!o || ![o conformsToProtocol:@protocol(MTLTexture)]) return 0;
+    if (!o || !obj_is_mtl_texture(o)) return 0;
     return (((id<MTLTexture>)o).usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite)) != 0 || objc_getAssociatedObject(o, &g_bcrt_gpu_key) != nil;
 }
 void mtl_tex_cpu_written(const tex_t *t) {
@@ -3848,7 +3889,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int treg_retired) {
         return pk->view ? pk->view : pk->tex;
     }
     int stale = 0;
-    if (have && [have conformsToProtocol:@protocol(MTLTexture)] && ((id<MTLTexture>)have).parentTexture) { pthread_mutex_lock(&g_smu); stale = !alias_has(have) && !alias_has(((id<MTLTexture>)have).parentTexture); pthread_mutex_unlock(&g_smu); }
+    if (have && obj_is_mtl_texture(have) && ((id<MTLTexture>)have).parentTexture) { pthread_mutex_lock(&g_smu); stale = !alias_has(have) && !alias_has(((id<MTLTexture>)have).parentTexture); pthread_mutex_unlock(&g_smu); }
     if (stale) {
         // An sRGB / linear view whose parent left the sharing table (upgraded, taken over or evicted) no longer shares the storage's bytes: dropped, and made again below on what holds them now
         static int nstale; if (nstale++ < 4) MLOG("stale sRGB / linear view dropped ser=%llu format %lu (%d so far)", (unsigned long long)t->serial, (unsigned long)((id<MTLTexture>)have).pixelFormat, nstale);
@@ -12316,7 +12357,7 @@ static int mrb_pending(uint64_t serial) {
 static int tex_gpu_touched(uint64_t serial) {
     __unsafe_unretained id o = tex_get(serial);
     if ([o isKindOfClass:[NvPkg class]]) o = ((NvPkg *)o)->tex;
-    return o && [o conformsToProtocol:@protocol(MTLTexture)]
+    return o && obj_is_mtl_texture(o)
         && ((((id<MTLTexture>)o).usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite)) != 0
             || objc_getAssociatedObject(o, &g_bcrt_gpu_key) != nil);
 }
