@@ -1618,11 +1618,7 @@ def xl(ch):
     r = subprocess.run([XLATE, jp, w], capture_output=True, text=True)
     try: os.unlink(jp)
     except OSError: pass
-    for k in ch:
-        if jobs[k]['stage'] != 'gs':
-            try: os.unlink(os.path.join(w, k + '.bin'))
-            except OSError: pass
-    return r
+    return r   # each <key>.bin stays until fin(): a vertex shader's integer-input pass (finish) translates it again; fin's cleanup removes it
 with cf.ThreadPoolExecutor(NJ) as ex: xr = list(ex.map(xl, [c for c in chunks if c]))
 xerr = {}
 for r in xr:
