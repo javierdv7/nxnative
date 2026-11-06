@@ -597,7 +597,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 - **`build` → `game`**, frame rate, blocked: frame-step stubs have no function-matched form yet, judgement: frame step at the framework interval setter (sead::GameFrameworkOunce). The game's own framework code at fixed addresses
 
-- **1.1.1 `main`** `e0f3ccfa…` ([patches.py:46](../../dm/games/0400486024DEC000/patches.py#L46))
+- **v131072 `main`** `e0f3ccfa…` ([patches.py:46](../../dm/games/0400486024DEC000/patches.py#L46))
   - frame step `+0x346c5c0`: GameFrameworkOunce interval setter: the host's step unless the game fixes a lower rate itself (state page target fps; 0 = the game's interval)
 
 ### The Legend of Zelda: Tears of the Kingdom
