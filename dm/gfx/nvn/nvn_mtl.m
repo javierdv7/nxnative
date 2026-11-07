@@ -11799,6 +11799,51 @@ static const ixc_ent *ixc_find(const p_draw *dw, const p_draw_idx *di) {
 static void ixc_take(const p_draw *dw, const p_draw_idx *di) {
     if (g_ixc_n < IXC_MAX && !ixc_find(dw, di)) g_ixc[g_ixc_n++] = (ixc_ent){dw ? dw->ind : di->ind, dw ? 0 : di->ibuf, dw ? dw->prim : di->prim, dw ? -1 : di->itype, 0, 0, 0};
 }
+static void ixc_run(const p_draw *dw, const p_draw_idx *di);
+// A draw about to open a render pass: an indirect draw later in that pass with no conversion would end it (ixc_run), with a store and a load of every attachment, so the
+// first one before the pass ends (render targets set again, a dispatch or a buffer write, which also end the look-ahead of ixc_run) is converted now, while no pass is open,
+// with what ixc_run's look-ahead takes after it. Ocarina of Time: its main depth and colour passes (1920x1080, about 800 draws each) were opened by ordinary draws and
+// split once each a frame at their first indirect mesh draw (the grass), after a compute dispatch had dropped the conversions or in a new submission. A write between here and
+// that draw drops its conversion as before (ixc_writes_spare, g_ixc_stop), and the draw converts again at its place. Games with no such draws never scan (g_ixc_runs)
+static uint64_t g_ixc_pre, g_ixc_pre_scans; static int g_ixc_pre_off = -1;   // DM_NVN_IXC_PRE=0: off (each such draw converts at its place, splitting its pass)
+// Scanning every pass cost Ocarina of Time about 1.2 ms of the submit thread a frame (each pass's commands read once more), so only the passes a split has met are scanned,
+// remembered by their attachments (colour 0 and depth, by storage address and shape: Ocarina of Time makes its targets on new texture objects every frame, so serials never
+// match the next frame). Neither the pass's place in the frame nor the program bound when it opens holds from frame to frame (presents do not mark where a frame's commands
+// start, and the game sorts its draws), so its post-processing passes, which draw into the main targets too, are scanned as well. The scan stops at the first such draw and
+// ixc_run's look-ahead goes on from there (g_ixc_from), so no command is read twice. One that finds nothing for IXC_LEARN_IDLE scans is forgotten
+enum { IXC_LEARN = 8, IXC_LEARN_IDLE = 240 };
+static const fz_cursor *g_ixc_from;   // ixc_prepass: the look-ahead goes on from the draw it found, not from the draw that opens the pass
+static struct { uint64_t c0, d; uint32_t idle; int on; } g_ixc_learn[IXC_LEARN];
+static uint64_t ixc_att_key(const tex_t *t) { return t ? (uint64_t)(uintptr_t)t->mem ^ (uint64_t)t->d.format << 52 ^ (uint64_t)t->d.width << 32 : 0; }   // storage and shape
+static void ixc_pass_key(uint64_t *c0, uint64_t *d) { *c0 = ixc_att_key(R.rt.n ? R.rt.color[0] : NULL); *d = ixc_att_key(R.rt.depth); }
+static int ixc_learned(uint64_t c0, uint64_t d) {
+    if (!c0 && !d) return -1;
+    for (int k = 0; k < IXC_LEARN; k++) if (g_ixc_learn[k].on && g_ixc_learn[k].c0 == c0 && g_ixc_learn[k].d == d) return k;
+    return -1;
+}
+static void ixc_learn(void) {   // a split: the pass being split (its render targets are R.rt still)
+    uint64_t c0, d; ixc_pass_key(&c0, &d); if ((!c0 && !d) || ixc_learned(c0, d) >= 0) return;
+    int k = 0; for (int i = 0; i < IXC_LEARN; i++) { if (!g_ixc_learn[i].on) { k = i; break; } if (g_ixc_learn[i].idle > g_ixc_learn[k].idle) k = i; }
+    g_ixc_learn[k].c0 = c0; g_ixc_learn[k].d = d; g_ixc_learn[k].idle = 0; g_ixc_learn[k].on = 1;
+}
+static void ixc_prepass(void) {
+    if (g_ixc_pre_off < 0) { const char *e = getenv("DM_NVN_IXC_PRE"); g_ixc_pre_off = e && !strcmp(e, "0"); }
+    if (g_ixc_pre_off || g_enc || !g_ixc_runs || !g_exec_next || g_ret_n > 8) return;
+    uint64_t c0, d0; ixc_pass_key(&c0, &d0); int k = ixc_learned(c0, d0); if (k < 0) return;   // the pass about to open
+    g_ixc_pre_scans++;
+    fz_cursor cur = {.p = g_exec_next, .ret_n = g_ret_n}; memcpy(cur.ret, g_ret, sizeof(*g_ret) * (size_t)g_ret_n);
+    const uint8_t *q; op_hdr h; const void *a;
+    for (int guard = 0; guard < 20000 && fz_next(&cur, &q, &h, &a); guard++) {
+        if (h.op == OP_SET_RT || h.op == OP_DISPATCH || h.op == OP_COPY_B2B || h.op == OP_CLEAR_BUF || h.op == OP_COPY_T2B) break;
+        p_draw dt; p_draw_idx it; const p_draw *d = h.op == OP_DRAW ? draw_rec(a, h.size, &dt) : NULL; const p_draw_idx *x = h.op == OP_DRAW_IDX ? draw_idx_rec(a, h.size, &it) : NULL;
+        if ((d && ixc_wanted(d, NULL)) || (x && ixc_wanted(NULL, x))) {
+            g_ixc_learn[k].idle = 0;
+            if (!ixc_find(d, x)) { g_ixc_pre++; g_ixc_from = &cur; ixc_run(d, x); g_ixc_from = NULL; }
+            return;
+        }
+    }
+    if (++g_ixc_learn[k].idle > IXC_LEARN_IDLE) g_ixc_learn[k].on = 0;   // no such draw in this pass lately: no more scans of it
+}
 static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
     static id<MTLComputePipelineState> ps[2]; static id<MTL4ArgumentTable> at; static int failed;
     if (failed) return;
@@ -11808,13 +11853,14 @@ static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
         if (!at) { failed = 1; MLOG("[RED] indirect draw conversion: cannot create the compute pipeline %s (indirect draws of quads / fans / 8-bit indices are skipped)", e.localizedDescription.UTF8String); return; } }
     // Ending a pass and landing deferred inline writes can advance the
     // epoch. Snapshot it after both, before this compute encoder opens.
-    if (g_enc) { g_ixc_splits++; PD("M %llu indirect draw conversion: render pass split here", g_stat_pass); rp_end(); }
+    if (g_enc) { g_ixc_splits++; ixc_learn(); PD("M %llu indirect draw conversion: render pass split here", g_stat_pass); rp_end(); }
     ubd_land_compute();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     if (g_ixc_epoch != g_ixc_gen || g_ixc_sub != g_sub_serial || g_ixc_n > IXC_MAX - 8) { g_ixc_n = 0; g_ixc_epoch = g_ixc_gen; g_ixc_sub = g_sub_serial; }
     int n0 = g_ixc_n; ixc_take(dw, di);
     if (g_exec_next && g_ret_n <= 8) {   // Later draws in replay order (current list → callers → the rest of this submission), up to the next write that may reach any address
         fz_cursor cur = {.p = g_exec_next, .ret_n = g_ret_n}; memcpy(cur.ret, g_ret, sizeof(*g_ret) * (size_t)g_ret_n);
+        if (g_ixc_from) cur = *g_ixc_from;
         const uint8_t *q; op_hdr h; const void *a;
         enum { IXW_MAX = 64 }; uint64_t wlo[IXW_MAX], whi[IXW_MAX]; int nw = 0;   // destinations of the buffer writes walked past
         for (int guard = 0; guard < 200000 && g_ixc_n < IXC_MAX && fz_next(&cur, &q, &h, &a); guard++) {
@@ -11865,7 +11911,7 @@ static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
     enc_c_end(ce);
     args_dirty_all();
     if (!g_ixc_runs++) MLOG("indirect draw conversion: first time, %d draws (quads, fans, 8-bit indices or mesh tasks converted on the GPU before rendering)", n);
-    else if (g_ixc_runs % 3600 == 0) MLOG("indirect draw conversion: %llu times, render pass split %llu times", (unsigned long long)g_ixc_runs, (unsigned long long)g_ixc_splits);
+    else if (g_ixc_runs % 3600 == 0) MLOG("indirect draw conversion: %llu times (%llu before the pass they are in opens, ixc_prepass, in %llu scans), render pass split %llu times", (unsigned long long)g_ixc_runs, (unsigned long long)g_ixc_pre, (unsigned long long)g_ixc_pre_scans, (unsigned long long)g_ixc_splits);
     // DM_NVN_IXCLOG=<n>: logs the first n conversions (record → arguments) once the GPU has run them
     static int lg = -1; if (lg < 0) { const char *v = getenv("DM_NVN_IXCLOG"); lg = v ? atoi(v) : 0; }
     for (int i = 0; i < n && lg > 0; i++) { const ixc_ent *e = &g_ixc[n0 + i]; if (!e->args) continue; lg--;
@@ -12424,6 +12470,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     if (!g_enc && !g_geo_program && (g_mdx_ep != g_mdx_epoch || g_mdx_sub != g_sub_serial)) mdx_run(NULL, NULL);   // mask any indirect-count multi-draws or mesh-task draws in the upcoming pass before opening it
     if (g_nlc && !g_enc) lc_take(pr);   // waiting clears: this pass's load actions, or landed before it (see lc_take)
     if (ixc_wanted(dw, di) && !ixc_find(dw, di)) ixc_run(dw, di);   // indirect quads / fans / 8-bit indices: converted on the GPU before the render pass, at their own place in the replay (see ixc_run)
+    if (!g_enc) ixc_prepass();   // the pass this draw opens: its later indirect draws converted now, not by splitting it (see ixc_prepass)
     uint64_t mdx = 0;   // the masked copy of the record (mdx_run); a draw it could not copy waits for the count instead
     if (mdx_on) { uint64_t ind = dw ? dw->ind : di->ind, cnt = dw ? dw->mdi_cnt : di->mdi_cnt; int i = dw ? dw->mdi_i : di->mdi_i;
         if (!mdx_find(ind, cnt, &mdx)) { mdx_run(dw, di); if (!mdx_find(ind, cnt, &mdx)) mdx = 0; }
