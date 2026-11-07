@@ -7665,8 +7665,13 @@ static void pso4_init(void) {
     });
 }
 static int pso4_compiler(void) { pso4_init(); return g_comp4 != nil; }   // render pipelines go through the Metal 4 compiler (fn_spec)
-// Writes one flush period's captures as the next file of the archive, on g_arch_q once every compile in the period has returned; g_arch_flush_ok: the last one wrote its file
-static int g_arch_flush_ok;
+// Writes one flush period's captures as the next file of the archive, on g_arch_q once every compile in the period has returned; g_arch_flush_ok: the last one wrote its file,
+// g_arch_flush_failed: one of this run's writes failed (a compaction then keeps the old files)
+static int g_arch_flush_ok, g_arch_flush_failed;
+// At most this many bases in one flush period while a compacting prewarm runs. The prewarm used to hold every capture until it ended, so its period took the recaptured bases and
+// every base the prewarm compiled: Ocarina of Time's 40,151-line manifest compiled 6,243 bases on the first start after a chain change, Metal's serializer stopped at its LMDB
+// map ("cannot write 'UNITS' database: MDB_MAP_FULL"), nothing was written and every start compiled them again (20 minutes each). Periods of this size wrote fine in the prebuild
+enum { ARCH_FLUSH_MAX = 1024 };
 static void arch_compact_finish(void);
 static void arch_write(ArchEpoch *ep) {
     int n = atomic_load(&ep->n), vd = atomic_load(&ep->vd);   // exact: no compile of the period is under way
@@ -7680,7 +7685,7 @@ static void arch_write(ArchEpoch *ep) {
     if (ep->compacting) unlink(arch_compact_marker().fileSystemRepresentation);
     atomic_fetch_sub(&g_arch_new, n); atomic_fetch_sub(&g_arch_new_vd, vd);
     ok = ok && !rename(tmp.fileSystemRepresentation, path.fileSystemRepresentation);
-    if (!ok) { MLOG("[RED] pipeline archive: writing %s failed%s%s", path.UTF8String, e ? ": " : "", e ? e.localizedDescription.UTF8String : ""); unlink(tmp.fileSystemRepresentation); }
+    if (!ok) { g_arch_flush_failed = 1; MLOG("[RED] pipeline archive: writing %s failed%s%s", path.UTF8String, e ? ": " : "", e ? e.localizedDescription.UTF8String : ""); unlink(tmp.fileSystemRepresentation); }
     else {
         g_arch_flush_ok = 1;
         if (!vd && arch_file_ok(path)) {
@@ -7699,8 +7704,10 @@ static void arch_write(ArchEpoch *ep) {
 // A flush: the compiles from here on capture into a new period, and the current one is written once its compiles have returned. Returns at once, on any thread; a compile that
 // does not return holds back only its own period's file
 static void arch_flush(void) {
-    // Keep all recaptured bases in one serialization, even when a prewarm lasts beyond the timer.
-    if (!g_arch_cap || (g_compact_enabled && atomic_load(&g_warm_running))) return;
+    // While a compacting prewarm runs, a period is written only once it holds ARCH_FLUSH_MAX bases; the one written after the prewarm completes the compaction
+    if (!g_arch_cap) return;
+    int warm = g_compact_enabled && atomic_load(&g_warm_running);
+    if (warm) { os_unfair_lock_lock(&g_ep_lock); int n = atomic_load(&g_ep->n); os_unfair_lock_unlock(&g_ep_lock); if (n < ARCH_FLUSH_MAX) return; }
     os_unfair_lock_lock(&g_ep_lock); int any = atomic_load(&g_ep->n) || atomic_load(&g_ep->active); os_unfair_lock_unlock(&g_ep_lock);
     if (!any) return;   // nothing captured or under way: the period goes on
     ArchEpoch *ne = ep_new();
@@ -7709,7 +7716,7 @@ static void arch_flush(void) {
     ArchEpoch *old = g_ep; any = atomic_load(&old->n) || atomic_load(&old->active);   // again: another flush may just have handed it over
     if (any) {
         g_ep = ne;
-        old->compacting = g_compact_enabled && atomic_load(&g_compacted) && !atomic_exchange(&g_compact_taken, 1);   // this period holds the recaptured bases (see arch_compact_allowed)
+        old->compacting = g_compact_enabled && !warm && atomic_load(&g_compacted) && !atomic_exchange(&g_compact_taken, 1);   // this period holds the recaptured bases (see arch_compact_allowed)
     }
     os_unfair_lock_unlock(&g_ep_lock);
     if (!any) return;
@@ -7724,7 +7731,7 @@ static void arch_note_new(void) {   // a base was compiled: flush 10 s later (on
 }
 static void arch_compact_finish(void) {   // after the period that holds the recaptured bases is written (arch_write): the old files go once their bases are in the new one
     if (!g_compact_files || !g_compacted) return;
-    if (!g_arch_flush_ok) { MLOG("[RED] pipeline archive: compaction left the old files (the flush failed)"); return; }
+    if (!g_arch_flush_ok || g_arch_flush_failed) { MLOG("[RED] pipeline archive: compaction left the old files (a flush failed)"); return; }
     for (NSString *f in g_compact_files) unlink(f.fileSystemRepresentation);
     MLOG("pipeline archive compacted: %lu files of bases with a vertex layout gave %d bases to the file just written and were removed", (unsigned long)g_compact_files.count, (int)g_compacted);
     g_compact_files = nil; g_compact_arch = nil;
