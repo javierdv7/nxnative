@@ -38,10 +38,11 @@ shader_groups	/Shader/=shader /Effect/=effect /Lib/=lib /UI/=layout
 shader_note	Ocarina of Time shaders
 
 # ---- Frame rate ----
-# The frame step (patches.py, main e0f3ccfa…): the host picks each frame's vsyncs and hands them to sead::GameFrameworkOunce's interval setter, so game time keeps to real
-# time when 60 fps does not hold (it played slow at 20-40 fps: the game fixes interval 1 itself). Unverified that the logic steps by the interval (the game note)
+# 60 fps (one game tick a frame; the game never changes its present interval): the host decides each frame's step in whole vsyncs and holds the frame that long
+# (patches.py FRAME_STEP: stubs at the framework's frame-rate tick and interval controller, upstream PR #1584); 30 when 60 does not hold, game time = real time. DM_FPS_TARGET=30
+# forces 30, 0 keeps the game's fixed interval 1 as shipped (slow motion below 60 fps)
 fps_target	60
-# A frame longer than 50 ms used to lose time (the hold stopped at 3 vsyncs): game time 0.71 of real time at 20 fps on an M4. The interval setter takes 4 (fps = 60 / interval)
+# A frame longer than 50 ms used to lose time (the hold stopped at 3 vsyncs): game time 0.71 of real time at 20 fps on an M4. The controller's output takes 4 (fps = 60 / interval)
 fps_hold_max	4
 # The game waits on its frame's fence, so at a 3-vsync hold the GPU idles between frames and macOS keeps its clock at the Medium state (Instruments, M4): the same Kokiri Forest
 # frame took 30-33 ms of GPU there and 23-25 ms with the GPU kept busy. Snapshots free the swapchain texture at once and the encode thread shortens the serial chain

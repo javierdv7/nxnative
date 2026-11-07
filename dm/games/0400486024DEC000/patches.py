@@ -1,47 +1,68 @@
-# The Legend of Zelda: Ocarina of Time (0400486024DEC000): the rewriter's patches of this game's own builds. dm/tools/patch_nso.py loads every profile's patches.py and applies those of a
-# module's NSO build ID; CUTS, OBS and FRAME_STEP as described there ("Registered patches"). Patches of Nintendo SDK module builds are in dm/tools/sdk_patches.py
+# The Legend of Zelda: Ocarina of Time, Switch 2 edition (0400486024DEC000): the rewriter's patches of this game's own builds. dm/tools/patch_nso.py loads every profile's
+# patches.py and applies those of a module's NSO build ID; CUTS, OBS and FRAME_STEP as described there ("Registered patches").
 from nso_asm import ADRP, B
 
-# main e0f3ccfaf50065ae4ea01eb5aeb13b1a (the v0 base and the v131072 update share it): sead::GameFrameworkOunce (vtable main+0x4c63f80, `fw` below) presents through its interval
-# setter main+0x346c5c0 (fw, w1 = vsyncs): nvnWindowSetPresentInterval through the window at fw+0x180, then fw+0xfc = 60 / interval, which the vsync wait (main+0x346c920) and the
-# frame-rate getters read. Its one caller is the frame-rate controller (main+0x3b4ef60, object at fw+0x270 = `ctrl`, reached from vtable +0x128 main+0x4dbd60 every frame), which
-# calls it at main+0x3b4f088 with ctrl+0x48 also when it is disabled (ctrl+0x60 bit 0 → main+0x3b4f074): the setter runs once a frame. When enabled the controller counts the
-# vsyncs the last frame needed from the CPU span (fw+0x148) and the GPU span (fw+0x150, from counter timestamps), clamped to [ctrl+0, ctrl+4], steps up after ctrl+0x10 late
-# frames and down later: a 30 fps fallback. The game turns it off itself and fixes the interval: main+0x33723d0 sets ctrl+0x60 and calls setInterval(1) (main+0x3b4f370, which
-# also writes ctrl+0x48 and ctrl+0x58 = 60 / interval), main+0x3372400 sets ctrl+0x60 and a rate of its own (main+0x3b4f390), main+0x3372420 turns it back on
-# (main+0x3b4f2e0). In gameplay on the Mac the present interval stayed 1 (run logs: "present interval set by the game 1" only, with DM_NVN_GPU_TS=segment too) while frames took
-# 25-60 ms, and the game ran slow: its updates are once a frame.
-# Unverified: which field the game logic reads for its time step. The controller's 30 fps fallback implies the logic steps by the interval (otherwise the console would play slow
-# whenever it stepped up), and the setter is the one place every interval goes through, so the stub hands the host's step to it, as Breath of the Wild's does
-# (dm/games/01007EF00011E000/patches.py). If the speed is still wrong at a two-vsync step, the logic's delta source is elsewhere (open: the AI queries QueryGetBaseDeltaTime,
-# QueryVFRCounter and IsUseVFR name a VFR whose reader was not found).
-# The stub (x16 / x17 are free at the entry: the setter's arguments are x0 and w1): with a target fps on the state page (fps_target), the host's step (state +0x20) replaces w1,
-# unless the game has disabled the controller and asks for more than one vsync itself (a fixed lower rate of its own): that interval is kept and published at state +0x24, so
-# the host holds frames that long. A disabled controller at interval 1 (the game's fixed 60) takes the host's step: that is the case that played slow. 0 at +0x20 (not decided
-# yet) or no target keeps the game's interval
+# Frame step (update v131072, main e0f3ccfa…): the game runs at 60 fps on the Switch 2, one game tick (1/60 s) per frame, and never changes its present interval: the frame-rate
+# tick of its sead framework (vtable +0x128, main+0x4dbd60) returns at once because the framework's frame-rate mode ((fw+0x24f) & 3) is 1, so the interval controller
+# embedded at fw+0x270 (main+0x3b4ef60, the same design as Breath of the Wild's) never runs. On a Mac that holds about 39 fps the game therefore plays in slow motion.
+# The logic does follow the interval when one is set: with the controller forced to interval 2 / 30 fps, Link's run from the bed to the door took 23 presented frames instead
+# of 59 (DM_NVN_REGLUM per-frame luminance, 2026-11-06, M1 Ultra), two ticks a frame, as Breath of the Wild's VFR does. So the host's frame step goes in at the controller:
+#   · main+0x4dbd6c / +0x4dbd7c (the tick): with a target fps the mode check is skipped and the interval controller runs (never the VRR frame-rate controller, +0x232 / +0x231);
+#   · main+0x3b4ef90 / +0x3b4ef9c (the controller's paused flag +0x60 and "no frame time yet", fw+0x140 < 1): skipped with a target, so the controller reaches its output every frame;
+#   · main+0x3b4f054 (the controller's output: w21 = the interval it chose, stored at ctrl+0x48, fps = 60 / w21 at +0x58, then setFrameRate main+0x4dc0f0 → the swapchain's
+#     setPresentInterval main+0xf49970 → nvnWindowSetPresentInterval, and setWaitVsyncInterval main+0x346c5c4, fps at fw+0xfc): w21 = the host's step in whole vsyncs
+#     (state +0x20) once the host has decided one; until then the controller's own choice (its first frames measure the CPU and GPU time of the previous frame).
+# State page target fps 0 (DM_FPS_TARGET=0): every stub runs the original instructions, the game keeps its fixed 60 fps interval 1 as shipped. x16 / x17 are free at all
+# five sites (neither function uses them); the controller's sites keep the flags (adrp / ldr / cbz / mov do not set them: +0x3b4ef9c's b.lt reads cmp x8,#1 from before).
 def frame_step(ctx):
     here, emit, fs_site, fs_put, FS_STATE_OFF = ctx.here, ctx.emit, ctx.site, ctx.put, ctx.state
-    fs_site(0x346c5c0, '7f2303d5')   # pacibsp
+    # the frame-rate tick (vtable +0x128): mode check and controller choice
+    fs_site(0x4dbd6c, '60010054'); fs_site(0x4dbd7c, 'a1000054')
+    start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xb9400210,   # ldr w16,[x16]          target fps
+              0x34000090,   # cbz w16,orig (+4)
+              0xaa0003e1,   # mov x1,x0
+              0x9109c000):  # add x0,x0,#0x270       the interval controller
+        emit(w)
+    emit(B(here(), 0x3b4ef60))                                      # run it (the tail call at main+0x4dbd94)
+    emit(0x54000160)                                                # orig: b.eq +11 → the ret at main+0x4dbd98 (below)
+    emit(B(here(), 0x4dbd70))                                       # mode != 1: the original choice
+    for _ in range(9): emit(0xd503201f)
+    emit(B(here(), 0x4dbd98))                                       # the ret
+    fs_put(0x4dbd6c, [B(0x4dbd6c, start)], 'frame-rate tick: with a target fps the frame-rate mode check is skipped and the interval controller runs')
+    # the interval controller: paused flag and "no frame time yet"
+    fs_site(0x3b4ef90, '28070037'); fs_site(0x3b4ef9c, 'cb060054')
+    start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xb9400210,   # ldr w16,[x16]
+              0x35000050):  # cbnz w16,on (+2)
+        emit(w)
+    emit(0x37000048)                                                # orig: tbnz w8,#0,paused (+2)
+    emit(B(here(), 0x3b4ef94))                                      # on / not paused: continue
+    emit(B(here(), 0x3b4f074))                                      # paused: the original target
+    fs_put(0x3b4ef90, [B(0x3b4ef90, start)], 'interval controller: its paused flag (+0x60) is ignored with a target fps')
+    start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xb9400210,   # ldr w16,[x16]
+              0x35000050):  # cbnz w16,on (+2)
+        emit(w)
+    emit(0x5400004b)                                                # orig: b.lt skip (+2)   (flags: cmp x8,#1 at main+0x3b4ef98)
+    emit(B(here(), 0x3b4efa0))                                      # on / a frame time exists: continue
+    emit(B(here(), 0x3b4f074))                                      # skip: the original target
+    fs_put(0x3b4ef9c, [B(0x3b4ef9c, start)], 'interval controller: runs before the first frame time too with a target fps')
+    # the controller's output: the host's step
+    fs_site(0x3b4f054, '88078052')
     start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
     for w in (0xb9400211,   # ldr w17,[x16]          target fps (0 = off)
-              0x340001d1,   # cbz w17,orig (+14)
-              0x394b4011,   # ldrb w17,[x0,#0x2d0]   ctrl+0x60: the game disabled the controller
-              0x360000b1,   # tbz w17,#0,host (+5)
-              0x7100043f,   # cmp w1,#1
-              0x5400006d,   # b.le host (+3)         its fixed 60: the host's step
-              0xb9002601,   # str w1,[x16,#0x24]     a fixed lower rate of the game's own: published, kept
-              0x14000008,   # b orig (+8)
-              0xb900261f,   # host: str wzr,[x16,#0x24]
+              0x340000f1,   # cbz w17,orig (+7)
               0xb9402211,   # ldr w17,[x16,#0x20]    step in vsyncs
-              0x340000b1,   # cbz w17,orig (+5)      not decided yet
-              0x2a1103e1,   # mov w1,w17
+              0x340000b1,   # cbz w17,orig (+5)      not decided yet: the controller's own interval
+              0x2a1103f5,   # mov w21,w17
               0xf9401a11,   # ldr x17,[x16,#0x30]
-              0x8b214231,   # add x17,x17,w1,uxtw
+              0x8b354231,   # add x17,x17,w21,uxtw
               0xf9001a11,   # str x17,[x16,#0x30]    vsyncs stepped
-              0xd503237f):  # orig: pacibsp
+              0x52800788):  # orig: mov w8,#0x3c
         emit(w)
-    emit(B(here(), 0x346c5c4))
-    fs_put(0x346c5c0, [B(0x346c5c0, start)], 'GameFrameworkOunce interval setter: the host\'s step unless the game fixes a lower rate itself (state page target fps; 0 = the game\'s interval)')
+    emit(B(here(), 0x3b4f058))
+    fs_put(0x3b4f054, [B(0x3b4f054, start)], "interval controller output: the host's step in whole vsyncs (state page target fps; 0 = the controller's own)")
 
 # Render scale (DM_RENDER_SCALE, state +0x10, dm/host/loader.c): the engine stores the final scale of its 3D views, after its dynamic resolution and fixed-mode choice, at
 # main+0x31d3f48 (str s0,[x20,#0xe5c]). A factor below 1.0 replaces it, so the size is fixed at that fraction and the dynamic resolution is off, as the host's switch means on
@@ -76,16 +97,16 @@ def render_scale(ctx):
     ctx.render_scale = 1
 
 
+
 def main_e0f3(ctx): frame_step(ctx); render_scale(ctx)
 
 
 FRAME_STEP = {'e0f3ccfaf50065ae4ea01eb5aeb13b1a': main_e0f3}
 
-# How general each patch is and could be (dm/tools/docs_patches.py "Binding", listed in docs/agents/game-patches.md): what, its binding now, the loosest it could have (goal),
-# purpose, why; blocked or kept: why the gap stays open (cannot close yet, or left open on purpose); checked: what was checked on game files (else a judgement)
+# How general each patch is and could be (dm/tools/docs_patches.py "Binding", listed in docs/agents/game-patches.md)
 BINDING = [
-    {'what': 'frame step at the framework interval setter (sead::GameFrameworkOunce)', 'now': 'build', 'goal': 'game', 'purpose': 'frame rate',
-     'why': "the game's own framework code at fixed addresses",
+    {'what': 'frame step in whole vsyncs', 'now': 'build', 'goal': 'game', 'purpose': 'frame rate',
+     'why': "the framework's interval controller and frame-rate tick",
      'blocked': 'frame-step stubs have no function-matched form yet'},
     {'what': 'render scale at the final 3D view scale store', 'now': 'build', 'goal': 'game', 'purpose': 'rendering',
      'why': "the game's final scale store follows its dynamic and fixed-mode choices",
