@@ -54,8 +54,8 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | `build` → `game` | 60 fps frame step and render scale | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md) | the game's own timing object |
 | `build` → `game` | 60 fps frame step and render scale (ksys::VFR) | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) | the game's own frame code; the frame-step state page is general |
 | `build` → `game` | 60 fps frame step: the KIDS frame task and frame-rate block | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md) | the game's own frame code; only the host's frame-step state page is shared. Fire Emblem: Three Houses and Taiko Risshiden V DX run on KTGL too, with other frame code |
-| `build` → `game` | frame step at the framework interval setter (sead::GameFrameworkOunce) | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) | the game's own framework code at fixed addresses |
 | `build` → `game` | frame step floor 2 → 1 vsync, and its frame step | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) | the game's own clock floor and step |
+| `build` → `game` | frame step in whole vsyncs | frame rate | blocked: frame-step stubs have no function-matched form yet | judgement | 1 | [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) | the framework's interval controller and frame-rate tick |
 | `build` → `game` | render scale at the final 3D view scale store | rendering | blocked: the store and its role are verified for this main build only | checked: v131072 main E0F3CCFAF50065AE4EA01EB5AEB13B1A, original store and surrounding code (upstream PR #1497), 2026-11-06 | 1 | [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) | the game's final scale store follows its dynamic and fixed-mode choices |
 | `build` → `game` | screen shape: the sizes, the view, the layouts' projection and their edge widgets (DM_SCREEN_ASPECT) | rendering | blocked: the stubs have no function-matched form yet | judgement | 1 | [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) | the output size is the host's, but where the game takes its sizes, its cameras and its layouts are this build's code |
 | `build` → `game` | Hagi coroutine stack region 1 GB → 64 MB | memory | kept: 1.1.4 is the last update; a match over Hagi would serve no other build of this game | checked: the final build 1.1.4 (the only one the profile packs), 2026-11-04 | 1 | [Super Mario 3D All-Stars: Super Mario Sunshine](../../dm/games/010049900F546002/README.md) | a size inside Hagi's own code: nothing the host sees tells a 1 GB reservation it can shrink from one it cannot |
@@ -90,7 +90,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 | [Taiko Risshiden V DX](#taiko-risshiden-v-dx) | 1 | 0 | 0 | 2 | 0 | `game` |
 | [The Legend of Zelda: Breath of the Wild](#the-legend-of-zelda-breath-of-the-wild) | 7 | 0 | 43 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Link's Awakening](#the-legend-of-zelda-links-awakening) | 1 | 0 | 0 | 0 | 0 | `build` → `game` |
-| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 2 | 0 | 0 | `build` → `game` ×2 |
+| [The Legend of Zelda: Ocarina of Time](#the-legend-of-zelda-ocarina-of-time) | 0 | 0 | 5 | 0 | 0 | `build` → `game` ×2 |
 | [The Legend of Zelda: Tears of the Kingdom](#the-legend-of-zelda-tears-of-the-kingdom) | 0 | 0 | 9 | 0 | 0 | `build` → `game` |
 | [Xenoblade Chronicles 3](#xenoblade-chronicles-3) | 6 | 0 | 0 | 0 | 0 | `build` → `game` |
 
@@ -596,12 +596,15 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
 [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md), `0400486024DEC000`, [patches.py](../../dm/games/0400486024DEC000/patches.py).
 
-- **`build` → `game`**, frame rate, blocked: frame-step stubs have no function-matched form yet, judgement: frame step at the framework interval setter (sead::GameFrameworkOunce). The game's own framework code at fixed addresses
+- **`build` → `game`**, frame rate, blocked: frame-step stubs have no function-matched form yet, judgement: frame step in whole vsyncs. The framework's interval controller and frame-rate tick
 - **`build` → `game`**, rendering, blocked: the store and its role are verified for this main build only, checked: v131072 main E0F3CCFAF50065AE4EA01EB5AEB13B1A, original store and surrounding code (upstream PR #1497), 2026-11-06: render scale at the final 3D view scale store. The game's final scale store follows its dynamic and fixed-mode choices
 
-- **v131072 `main`** `e0f3ccfa…` ([patches.py:82](../../dm/games/0400486024DEC000/patches.py#L82))
+- **v131072 `main`** `e0f3ccfa…` ([patches.py:104](../../dm/games/0400486024DEC000/patches.py#L104))
+  - frame step `+0x4dbd6c`: frame-rate tick: with a target fps the frame-rate mode check is skipped and the interval controller runs
   - frame step `+0x31d3f48`: final 3D view scale: the host render scale fixes it below 1.0 (1.0 = the game's dynamic resolution)
-  - frame step `+0x346c5c0`: GameFrameworkOunce interval setter: the host's step unless the game fixes a lower rate itself (state page target fps; 0 = the game's interval)
+  - frame step `+0x3b4ef90`: interval controller: its paused flag (+0x60) is ignored with a target fps
+  - frame step `+0x3b4ef9c`: interval controller: runs before the first frame time too with a target fps
+  - frame step `+0x3b4f054`: interval controller output: the host's step in whole vsyncs (state page target fps; 0 = the controller's own)
   - render scale stub (the launcher offers DM_RENDER_SCALE)
 
 ### The Legend of Zelda: Tears of the Kingdom
