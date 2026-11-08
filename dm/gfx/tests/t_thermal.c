@@ -31,6 +31,7 @@ static void target(float fps) {
 }
 static _Atomic int test_movie;
 int dm_movie_playing(void) { return atomic_load(&test_movie); }   // hle_movie.c: a movie's pictures are being handed out
+int dm_codec_playing(void) { return 0; }   // hle_codec_video.c: no nn::codec movie here
 static void movie(int on) { atomic_store(&test_movie, on); }
 
 static _Atomic int ready, start;

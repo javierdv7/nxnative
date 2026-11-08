@@ -22,6 +22,10 @@
 #include "vpx/vp8dx.h"
 #include "hle_movie_yuv.h"
 #include "hle_movie_avc.h"   // H.264 on VideoToolbox
+#include <stdatomic.h>
+
+static _Atomic uint64_t g_codec_pic_ns;   // when a video decoder last handed the game a picture (0 = its stream ended)
+int dm_codec_playing(void) { uint64_t t = atomic_load_explicit(&g_codec_pic_ns, memory_order_relaxed); return t && now_ns() - t < 500000000ull; }
 #include "hle_movie_av1.h"   // AV1 on VideoToolbox
 
 #define CV_MAGIC 0x56436d44u        // 'DmCV'
@@ -113,8 +117,10 @@ static void drain(cv_dec *d, int took) {
             memmove(d->held_eos, d->held_eos + 1, CV_HOLD - 1); d->nheld--;
             b->w = (uint16_t)im->d_w; b->h = (uint16_t)im->d_h; b->ts = ts; b->eos = eos;
             if (b->pool && b->pidx < b->pool->count) { pool_native_write(b->pool, b->pidx, im); if (b->pool->img[b->pidx]) vpx_img_free(b->pool->img[b->pidx]); b->pool->img[b->pidx] = im; } else vpx_img_free(im);
+            atomic_store_explicit(&g_codec_pic_ns, now_ns(), memory_order_relaxed);   // dm_codec_playing
             if (!d->pictures++) LOG("[codec] %s decoder %u: first picture %ux%u into buffer %u", k_cv_name[d->codec], d->id, b->w, b->h, i);
         } else { b->w = b->h = 0; b->ts = 0; b->eos = 1; d->eos_pending = 0; }
+        if (b->eos) atomic_store_explicit(&g_codec_pic_ns, 0, memory_order_relaxed);   // the movie ended: the cap need not wait out the half second
         if (b->eos) LOG("[codec] %s decoder %u: end of stream after %llu pictures", k_cv_name[d->codec], d->id, (unsigned long long)d->pictures);
         b->filled = 1; b->filled_gen = b->gen;
         spt_fire(d, i);

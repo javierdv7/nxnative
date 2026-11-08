@@ -1888,6 +1888,9 @@ static int fps_step_cap(void) {
     // Movies and a 30 fps target still need thermal samples: heat must reset the
     // calm interval, and cooling during those caps counts towards recovery.
     int thermal = thermal_capped();
+    // A game whose movie player takes a picture per game frame paced for 60 updates a second (profile movie_fps 60: Ocarina of Time decodes through nn::codec) plays its movies at
+    // half speed under a 30 cap, its sound running ahead: while such a movie plays the cap is 60, as at a 60 target
+    if (DM_GAME_MOVIE_FPS == 60 && !thermal && dm_codec_playing()) return 60;
     return dm_movie_playing() || t <= 30 || thermal ? 30 : 60;   // a movie: its player takes a picture per game frame, paced for the Switch's 30 (hle_movie.c)
 }
 static int fstep_on(void) { return fps_step_cap() != 0; }   // the host decides the steps in whole vsyncs
