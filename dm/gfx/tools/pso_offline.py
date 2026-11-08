@@ -379,6 +379,9 @@ def main(argv=None):
     pairs = read_pairs(text)
     bases, rest, left = plan(lib_dir, chain, pairs, zero)
     shaders = [] if a.no_compute else read_computes(a.shader_map, a.manifest)
+    if a.game and shaders:   # the game's own upscaler shaders (game.upscaler_keys, agl's NDSR networks) are left out: MetalFX draws them (DM_UPSCALER=metalfx), and with the game's
+        ups = set(game.upscaler_keys(g))   # upscaler a dispatch builds its pipeline when first met. They were the slowest of the compute pipelines to compile
+        shaders = [pc for pc in shaders if pc[:16] not in ups]
     computes, cleft = plan_compute(lib_dir, chain, shaders)
     work.mkdir(parents=True, exist_ok=True); out.mkdir(parents=True, exist_ok=True)
     js = work / 'bases.mtl4-json'   # metal-tt takes the format from the extension: .mtl4-json is Metal 4's (.mtlp-json is the Metal 3 format)
