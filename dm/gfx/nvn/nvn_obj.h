@@ -286,6 +286,7 @@ typedef struct { int n; uintptr_t r[64][2]; } mspan_t;
 int nvn_tex_mirror_b2t(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img, mspan_t *ms);
 int nvn_tex_mirror_t2t(const tex_t *s, unsigned sl, unsigned ss, const NVNcopyRegion *sr, const tex_t *d, unsigned dl, unsigned ds, const NVNcopyRegion *dr, mspan_t *ms);
 int nvn_tex_level_range(const tex_t *t, unsigned level, unsigned layer, uint64_t *lo, uint64_t *hi);   // one level of one layer in the texture's storage, as offsets; −1 out of range
+void nvn_ft_hold(void); void nvn_ft_release(void); void nvn_ft_restamp_held(uint64_t serial);   // the host writes GPU content into a registered texture's storage: not a CPU write (mirror_rb_own)
 // A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter) + code area). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
 // a stage whose code area was not yet in any memory pool then is computed the first time it is asked for, from the host's copy of its control section. The keys belong to
 // the program's serial, so a copy of the NVNprogram the game made after SetShaders finds them. Returns 0 = no such stage
