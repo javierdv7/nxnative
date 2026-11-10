@@ -39,6 +39,7 @@ shader_note	Ocarina of Time shaders
 # ---- Frame rate ----
 # The game steps its time by a frame ratio, its base rate / its frame rate, whatever the frame took: frames longer than a vsync played in slow motion. The ratio takes the host's
 # frame step instead (MATCH_FRAME_STEP in patches.py, found by its function on any build that keeps it): 1 vsync at 60 fps, 2 when 60 does not hold, so game time = real time
+# (frames that are not whole vsyncs long: the stub takes the measured frame time when it is longer than that step, DM_FRAME_DELTA=0 turns that off)
 fps_target	60
 # Its movies (nn::codec AV1) are paced by its player at a picture per game frame for 60 updates a second: under a 30 cap they played at half speed, the sound ahead (hle_nvn.c fps_step_cap)
 movie_fps	60
