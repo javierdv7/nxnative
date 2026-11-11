@@ -137,7 +137,7 @@ int main(void) { @autoreleasepool {
     EXPECT("batched archive: first group's base", 1, [batchArchive newRenderPipelineStateWithDescriptor:pre_desc(@"v1", @"f1", 0) error:nil] != nil);
     EXPECT("batched archive: second group's base", 1, [batchArchive newRenderPipelineStateWithDescriptor:pre_desc(@"v1", @"f2", 0) error:nil] != nil);
     EXPECT("batched archive: absent depth entry stays absent", 0, [batchArchive newRenderPipelineStateWithDescriptor:pre_desc(@"v1", @"f1", 1) error:nil] != nil);
-    // Whether a vertex shader writes the layer is its reflection's layer_out (dmsh_build.py layer_out), as shader_load takes it, not the layer's name in its library: one with layer
+    // Whether a vertex shader writes the layer is its reflection's layer_out (dmsh_entry.py layer_out), as shader_load takes it, not the layer's name in its library: one with layer
     // entry points of its own (entry_layer, vs_layer_entry) names it there, and its main0 pairs get a base. One whose main0 writes it (layer_out) gets none: its pipelines take an input
     // primitive class
     NSString *vl = @"#include <metal_stdlib>\nusing namespace metal;\nstruct V { float4 p [[position]]; };\nstruct L { float4 p [[position]]; uint l [[render_target_array_index]]; };\n"
@@ -164,7 +164,7 @@ int main(void) { @autoreleasepool {
         d.vertexFunction = fn4_note([vl newFunctionWithName:@"main0"], vl, @"main0", nil); d.fragmentFunction = fn4_note([fl newFunctionWithName:@"main0"], fl, @"main0", nil);
         d.vertexDescriptor = [MTLVertexDescriptor vertexDescriptor]; d.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
         uint64_t built0 = g_pb_built, arch0 = g_pb_archived; int new0 = g_arch_new; NSError *err = nil;
-        EXPECT("covered draw: a pipeline", 1, pso_build(d, &err) != nil);
+        EXPECT("covered draw: a pipeline", 1, pso_build(d, 0, &err) != nil);
         EXPECT("covered draw: its base from the bundle", arch0 + 1, g_pb_archived);
         EXPECT("covered draw: none compiled", built0, g_pb_built);
         EXPECT("covered draw: nothing captured for the device's archive", new0, g_arch_new);
